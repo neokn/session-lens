@@ -1,0 +1,71 @@
+#!/bin/sh
+# Boundary check: each folder of hooks/ imports only the folders inward of it.
+#   digest/  the rules: imports nothing of this mod but itself and types, and nothing of the engine
+#   record/  reads the record through the engine: never views/
+#   views/   draws figures it is given: never record/, refresh.ts or state.ts, and only types of the engine; it never
+#            reads or updates an atom
+#   the strata of views/ point down: an atom imports no molecule or organism, a molecule no organism, and nothing
+#            in views/ imports a template, which only the page uses
+#   the version's tabs draw every component: the atoms on TokenScreen, the molecules and organisms on ComponentScreen
+#   atoms    the scanner makes each file that uses an atom declare it; every declaration of one key has the same default
+# Run from anywhere: scripts/boundaries
+set -u
+cd "$(dirname "$0")/.." || exit 1
+python3 - <<'PY'
+import re, sys
+from pathlib import Path
+
+FORBIDDEN = {
+    'digest': [r'/record/', r'/views/', r'/refresh$', r'/state$', r'/register$', r'^claude-code$'],
+    'record': [r'/views/', r'/refresh$', r'/register$'],
+    'views': [r'/record/', r'/refresh$', r'/state$', r'/register$'],
+}
+# What each stratum of views/ must not import.
+STRATA = {
+    'atoms': [r'/molecules/', r'/organisms/', r'/templates/'],
+    'molecules': [r'/organisms/', r'/templates/'],
+    'organisms': [r'/templates/'],
+}
+STORE = re.compile(r'\b(read|update)\(\$')
+IMPORT = re.compile(r"^import\s+(type\s+)?[^'\"]*from\s+'([^']+)'", re.M)
+bad = 0
+for layer, rules in FORBIDDEN.items():
+    for f in sorted(Path('hooks', layer).rglob('*.ts*')):
+        if '.test.' in f.name: continue
+        for m in IMPORT.finditer(f.read_text()):
+            is_type, spec = m.group(1), m.group(2)
+            if layer == 'views' and spec == 'claude-code' and not is_type:
+                print(f'{f}: views take only types of the engine: {spec}'); bad += 1
+            for rule in rules:
+                if re.search(rule, spec):
+                    print(f'{f}: {layer}/ must not import {spec}'); bad += 1
+for stratum, rules in STRATA.items():
+    for f in sorted(Path('hooks', 'views', stratum).rglob('*.ts*')):
+        for m in IMPORT.finditer(f.read_text()):
+            for rule in rules:
+                if re.search(rule, m.group(2)):
+                    print(f'{f}: {stratum}/ must not import {m.group(2)}'); bad += 1
+for f in sorted(Path('hooks', 'views').rglob('*.ts*')):
+    for n, line in enumerate(f.read_text().split('\n'), 1):
+        if STORE.search(line):
+            print(f'{f}:{n}: views/ must not read or update an atom'); bad += 1
+# The version's tabs keep up: a component neither draws fails here.
+COMPONENT = re.compile(r'^export function ([A-Z]\w*)', re.M)
+for stratum, screen in (('atoms', 'TokenScreen'), ('molecules', 'ComponentScreen'), ('organisms', 'ComponentScreen')):
+    drawn = Path('hooks', 'views', 'templates', f'{screen}.tsx').read_text()
+    for f in sorted(Path('hooks', 'views', stratum).rglob('*.tsx')):
+        for name in COMPONENT.findall(f.read_text()):
+            if f'<{name} ' not in drawn:
+                print(f'{f}: {screen} does not draw {name}'); bad += 1
+ATOM = re.compile(r"atom\(\{ plugin: '[^']+', key: '([^']+)' \} as const, (.*)\)$", re.M)
+defaults = {}
+for f in sorted(Path('hooks').rglob('*.ts*')):
+    if '.test.' in f.name: continue
+    for m in ATOM.finditer(f.read_text()):
+        defaults.setdefault(m.group(1), {})[str(f)] = m.group(2)
+for key, by in defaults.items():
+    if len(set(by.values())) > 1:
+        print(f'atom {key} has different defaults: ' + '; '.join(f'{f}: {d}' for f, d in by.items())); bad += 1
+print(f'{bad} boundary violations')
+sys.exit(1 if bad else 0)
+PY

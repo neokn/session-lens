@@ -1,0 +1,21 @@
+{
+  "name": "session-lens",
+  "owner": {
+    "name": "Neo Kusanagi",
+    "email": "jr@neo.kn"
+  },
+  "metadata": {
+    "description": "The session-lens mod for Claude Code."
+  },
+  "allowCrossMarketplaceDependenciesOn": [
+    "claude-plugins-official"
+  ],
+  "plugins": [
+    {
+      "name": "session-lens",
+      "source": "./",
+      "description": "A /session-lens pane for Claude Code: what fills the context window, what each turn cost, and every tool, MCP server and skill each agent used, with a live event log.",
+      "homepage": "https://github.com/neokn/session-lens"
+    }
+  ]
+}

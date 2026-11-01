@@ -1,0 +1,24 @@
+{
+  "name": "session-lens",
+  "version": "1.0.0",
+  "description": "A /session-lens pane for Claude Code: what fills the context window, what each turn cost, and every tool, MCP server and skill each agent used, with a live event log.",
+  "author": {
+    "name": "Neo Kusanagi",
+    "email": "jr@neo.kn"
+  },
+  "homepage": "https://github.com/neokn/session-lens",
+  "repository": "https://github.com/neokn/session-lens",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "context-window",
+    "tokens",
+    "subagents",
+    "mod",
+    "pane"
+  ],
+  "dependencies": [
+    "session-report@claude-plugins-official"
+  ],
+  "types": "./types/index.d.ts"
+}
