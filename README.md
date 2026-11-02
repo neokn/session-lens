@@ -77,7 +77,7 @@ bash skills/autocompact-tuning/scripts/report.sh        # writes report.json and
 bash skills/autocompact-tuning/scripts/recommend.sh     # the same analysis as text
 ```
 
-Or ask Claude "what should I set /autocompact to", or run `/session-lens:autocompact-tuning`, which runs them. It reads your session logs under `~/.claude/projects/` and changes your settings only when you ask.
+Or run `/session-lens:autocompact-tuning`, which runs them and asks whether to write the setting for you, globally or by model. It takes no room in the context until you run it. It reads your session logs under `~/.claude/projects/` and changes your settings only when you say so.
 
 The page never changes: `report.sh` replaces only `~/.claude/autocompact-tuning/report.json`, and the page computes from it. It covers the last 30 days, leaning toward the last one, with a filter by project (the current one or all) and a table by model. It shows compression (manual, threshold and idle apart, subagents too), input and output without compaction, with and without the initial context, and what a different setting or initial context would cost to fill 1M, the setting in force and auto-compact off among them. Its rule, the cost model behind it and the settings it maps to are in `skills/autocompact-tuning/references/model.md`.
 

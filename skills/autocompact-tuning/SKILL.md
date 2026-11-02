@@ -1,14 +1,16 @@
 ---
 name: autocompact-tuning
 description: Use when someone wants a Claude Code auto-compact setting chosen or re-checked from their own usage — "auto compact 要設多少", "推薦 auto-compact 設定值", "幫我分析每次請求的 input/output", "壓縮比是多少", "what should I set /autocompact to", "is my CLAUDE_AUTOCOMPACT_PCT_OVERRIDE right", "compact 太早 / 太晚", or any question about where compaction becomes cheaper than letting the context grow. Also use when per-request token usage or compression ratios must be read from ~/.claude/projects jsonl logs.
+disable-model-invocation: true
 ---
 
 # autocompact-tuning
 
-A command, not a task for the model: it reads the session logs and writes the
-report with no model involved, and a person can run it directly or press
-`Auto-compact Report` in the session-lens pane. Run it, relay what it prints, and do
-not recompute anything. What this adds to the button is the question at the end:
+A person starts this with `/session-lens:autocompact-tuning`; it stays out of the
+model's context until then. The scripts read the session logs and write the report
+with no model involved, and a person can run them directly or press
+`Auto-compact Report` in the session-lens pane. Run them, relay what they print, and
+do not recompute anything. What this adds to the button is the question at the end:
 whether to write the setting for them.
 
 The script path is under this skill's base directory:
