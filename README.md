@@ -68,6 +68,19 @@ What the pane reads from the record and from files can hold colours, terminal ti
 
 Figures marked `≈` are estimated from the record's characters. Figures without it come from the API or `/context`. ↑ is what went into a request (input and cache), ↓ what came out. A subagent's window size and auto-compact trigger follow the main agent's.
 
+## Choosing an auto-compact setting
+
+The pane shows where the window stands against auto-compact; the plugin's `autocompact-tuning` skill says where that trigger should be. It needs no model: press `Auto-compact Report` at the foot of the pane, or from the plugin's folder:
+
+```bash
+bash skills/autocompact-tuning/scripts/report.sh        # writes report.json and opens the charts
+bash skills/autocompact-tuning/scripts/recommend.sh     # the same analysis as text
+```
+
+Or ask Claude "what should I set /autocompact to", or run `/session-lens:autocompact-tuning`, which runs them. It reads your session logs under `~/.claude/projects/` and changes your settings only when you ask.
+
+The page never changes: `report.sh` replaces only `~/.claude/autocompact-tuning/report.json`, and the page computes from it. It covers the last 30 days, leaning toward the last one, with a filter by project (the current one or all) and a table by model. It shows compression (manual, threshold and idle apart, subagents too), input and output without compaction, with and without the initial context, and what a different setting or initial context would cost to fill 1M, the setting in force and auto-compact off among them. Its rule, the cost model behind it and the settings it maps to are in `skills/autocompact-tuning/references/model.md`.
+
 ## Develop
 
 ```bash
@@ -100,6 +113,7 @@ The mod follows Explicit Architecture: the rules in the middle, the engine at th
 | `hooks/views/organisms/` | A section of the pane: `Waterfall`, `Compactions`, `CostTable`, `ComboTable`, `UseTable`, `EventLog`, `ContextGrid`, `TurnBox`, `TurnEntry`, `AgentNode`. |
 | `hooks/views/templates/` | A whole screen's frame, its slots filled by the page: `HistoryScreen`, `EffortScreen`, `TokenScreen`, `ComponentScreen`. |
 | `hooks/register.tsx` | The page, and the only container. It reads every atom of the store, computes the figures, and passes them down. |
+| `skills/autocompact-tuning/` | A skill apart from the pane: its instructions, its cost model, the scripts that read the logs and the page that draws their `report.json`. Nothing in `hooks/` imports it; the pane's button runs `report.sh` by its path. |
 
 ### Components
 

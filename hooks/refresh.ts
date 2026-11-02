@@ -221,6 +221,19 @@ export async function report($: EngineInterface) {
   }
 }
 
+// The auto-compact report needs no model: its script reads the logs, writes the data and opens the page.
+const AUTOCOMPACT_REPORT = 'skills/autocompact-tuning/scripts/report.sh'
+
+export async function autocompactReport($: EngineInterface) {
+  $.ui.toast('Auto-compact report: reading the logs')
+  try {
+    const { exitCode, stderr } = await $.process.run(['bash', `${$.plugin.root}/${AUTOCOMPACT_REPORT}`], { timeoutMs: 300_000 })
+    $.ui.toast(exitCode === 0 ? 'Auto-compact report: opened in your browser' : `Auto-compact report: ${clean(stderr).trim() || `stopped with code ${exitCode}`}`)
+  } catch (err) {
+    $.ui.toast(`Auto-compact report: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
 export async function refresh($: EngineInterface, isAsked = false) {
   if (cycle.isRefreshing) return
   cycle.isRefreshing = true

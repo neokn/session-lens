@@ -13,7 +13,7 @@ import { liveReqsOf } from './digest/turns'
 import { usesOf } from './digest/uses'
 import { bashEnded, bashStarted } from './record/children'
 import { readMainShape, readMcpInstructions, readPrompt, readRestart } from './record/transcript'
-import { checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
+import { autocompactReport, checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
 import { ledgerKey, measuredOf } from './state'
 import { Fold } from './views/atoms/Fold'
 import { cut, fit, fmtTime, io, IO_W, k, K_W, left, money, prompt, shortModel, span, tinyModel, toolLabel, typeOf, waffle, width } from './views/layout'
@@ -1383,19 +1383,25 @@ export const register: Register = on => {
           {agentsBlock}
           {logBlock}
           {/* The version at the left, so which copy runs can be seen; pressed, it opens the tabs of design tokens and UI components. Beside it the
-              theme drawn, which a press switches. The report is a turn of the model's: it costs tokens, so it asks once more
-              before it runs. Seldom wanted, it sits apart from every block, under the last, at the right, and dim. */}
+              theme drawn, which a press switches. The session report is a turn of the model's: it costs tokens, so it asks once more
+              before it runs. Left of it the auto-compact report, which costs none and so runs at the press. Seldom wanted, they sit
+              apart from every block, under the last, at the right, and dim. */}
           <Box flexDirection="row" justifyContent="space-between" width={W}>
             <Box flexDirection="row" gap={SPACE.gap}>
               {version ? <Button plain key="node-version" onPress={go('tokens')}><Text color={T.text.muted}>{`v${version}`}</Text></Button> : null}
               <Button plain key="node-theme" onPress={() => switchTheme($)}><Text color={T.text.muted}>{`${G.theme} ${drawnTheme}`}</Text></Button>
             </Box>
-            {isOk ? (
-              /* Installed since the last reading, the plugin is found as the fold opens. */
-              <Button plain key="node-report" onPress={() => checkReport($).then(toggle('report')).then(() => $.ui.scroll({ in: PANE, to: 'end' }).catch(() => undefined))}>
-                <Text color={T.text.muted}>{`${isOpen('report') ? G.open : G.shut} Generate Current Session Analysis Report`}</Text>
+            <Box flexDirection="row" gap={SPACE.gap}>
+              <Button plain key="node-autocompact" onPress={() => autocompactReport($)}>
+                <Text color={T.text.muted}>Auto-compact Report</Text>
               </Button>
-            ) : null}
+              {isOk ? (
+                /* Installed since the last reading, the plugin is found as the fold opens. */
+                <Button plain key="node-report" onPress={() => checkReport($).then(toggle('report')).then(() => $.ui.scroll({ in: PANE, to: 'end' }).catch(() => undefined))}>
+                  <Text color={T.text.muted}>{`${isOpen('report') ? G.open : G.shut} Generate Current Session Analysis Report`}</Text>
+                </Button>
+              ) : null}
+            </Box>
           </Box>
           {isOk && !hasReport && isOpen('report') ? (
             <Box flexDirection="column" alignItems="flex-end" width={W}>

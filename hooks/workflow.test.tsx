@@ -46,6 +46,9 @@ let markets: string | undefined
 let ran: { command: string; args?: string }[] = []
 let scripts: string[][] = []
 let toasts: string[] = []
+// What the auto-compact button started, and what its script answers.
+let reportRuns: string[][] = []
+let reportAnswer = { exitCode: 0, stderr: '' }
 let kept: Record<string, unknown> = {}
 
 // One more turn after the workflow's, its prompt typed `n` hours in, answered with a line.
@@ -79,6 +82,8 @@ async function mountLens([$, on]: Parameters<TestBody>, run?: { status: string; 
     return { text: '' }
   })
   on('command.list', () => ({ value: installed.map(name => ({ name, description: '', source: 'plugin' })) }))
+  reportRuns = []
+  reportAnswer = { exitCode: 0, stderr: '' }
   on('ui.toast', (_, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -114,6 +119,10 @@ async function mountLens([$, on]: Parameters<TestBody>, run?: { status: string; 
     return { value: line({ agentType: 'workflow-subagent', description: `sweep:${a}`, workflowPhase: 'Sweep', spawnDepth: 1 }) }
   })
   on('process.run', (_, e) => {
+    if (e.argv[1]?.endsWith('/report.sh')) {
+      reportRuns.push([...e.argv])
+      return { value: { ...reportAnswer, isStdoutTruncated: false, isStderrTruncated: false, stdout: '' } }
+    }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('ln "')) {
       scripts.push([...e.argv])
       return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: '' } }
@@ -263,6 +272,30 @@ test('every list unfolds ten at first, then thirty at a time', async (...args) =
   expect(await count(/"key":"node-log-t-\d+(-\d+)?"/g)).toBe(40)
   await press('fewer-log-turns')
   expect(await count(/"key":"node-log-t-\d+(-\d+)?"/g)).toBe(10)
+  await ui.unmount()
+})
+
+// The auto-compact report sits left of the session report and runs at the press, with no turn of the model's.
+test('the auto-compact report runs its script at the press, left of the session report', async (...args) => {
+  const [$] = args
+  const ui = await mountLens(args)
+  const press = (key: string) => $.ui.press({ plugin: 'session-lens', key: `node-${key}`, requestId: 'session-lens', surface: 'terminal' })
+  // The keys in the order they are drawn.
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key)
+  expect(keys.indexOf('node-autocompact')).toBeGreaterThan(-1)
+  expect(keys.indexOf('node-autocompact')).toBe(keys.indexOf('node-report') - 1)
+  await press('autocompact')
+  await clock.advance(1)
+  expect(reportRuns).toEqual([['bash', expect.stringMatching(/\/skills\/autocompact-tuning\/scripts\/report\.sh$/)]])
+  expect(toasts.join()).toContain('opened in your browser')
+  expect(ran).toEqual([])
+  // It says why when the script stops short.
+  toasts = []
+  reportAnswer = { exitCode: 2, stderr: 'recommend.sh: jq not found\n' }
+  await press('autocompact')
+  await clock.advance(1)
+  expect(toasts.join()).toContain('jq not found')
+  expect(toasts.join()).not.toContain('opened in your browser')
   await ui.unmount()
 })
 
