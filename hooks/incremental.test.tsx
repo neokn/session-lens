@@ -47,6 +47,7 @@ test('a record read again is read from where the last reading stopped', async ($
   const ran = (stdout: string) => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
   on('process.run', (_, e) => {
     const argv = (e as { argv: string[] }).argv
+    if (argv[0]?.endsWith('/bin/te')) return ran('')
     if (argv[0] === 'jq' || argv.some(a => a.includes('api-request-shape'))) return argv.includes('--version') ? ran('jq-1.7') : { value: { exitCode: 2, stdout: '', stderr: 'no', isStdoutTruncated: false, isStderrTruncated: false } }
     const from = Number(argv[5])
     asked.push(from)

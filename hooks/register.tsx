@@ -13,7 +13,8 @@ import { liveReqsOf } from './digest/turns'
 import { usesOf } from './digest/uses'
 import { bashEnded, bashStarted } from './record/children'
 import { readMainShape, readMcpInstructions, readPrompt, readRestart } from './record/transcript'
-import { checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
+import { economizerSummary, toolGroups, waitingNote } from './digest/economizer'
+import { checkEconomizer, checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
 import { ledgerKey, measuredOf } from './state'
 import { Fold } from './views/atoms/Fold'
 import { cut, fit, fmtTime, io, IO_W, k, K_W, left, money, prompt, shortModel, span, tinyModel, toolLabel, typeOf, waffle, width } from './views/layout'
@@ -28,6 +29,7 @@ import { ComboTable } from './views/organisms/ComboTable'
 import { Compactions } from './views/organisms/Compactions'
 import { ContextGrid, type Square, WAFFLE_W, type WindowPart } from './views/organisms/ContextGrid'
 import { agentCostItems, CostTable } from './views/organisms/CostTable'
+import { EconomizerBox } from './views/organisms/EconomizerBox'
 import { EventLogBox } from './views/organisms/EventLog'
 import { EventLogScreen } from './views/templates/EventLogScreen'
 import { TurnBox } from './views/organisms/TurnBox'
@@ -82,6 +84,7 @@ const memoryText = atom({ plugin: 'session-lens', key: 'memoryText' } as const, 
 const mcpInstructions = atom({ plugin: 'session-lens', key: 'mcpInstructions' } as const, null)
 const effortAll = atom({ plugin: 'session-lens', key: 'effortAll' } as const, null)
 const effortScope = atom({ plugin: 'session-lens', key: 'effortScope' } as const, 'all')
+const economizer = atom({ plugin: 'session-lens', key: 'economizer' } as const, null)
 
 const PANE = 'session-lens'
 
@@ -137,6 +140,7 @@ async function pageState($: EngineInterface) {
     instructionsOf: read($, mcpInstructions),
     effortOf: read($, effortAll),
     scopeOf: read($, effortScope),
+    economized: read($, economizer),
   }
   const values = await Promise.all(Object.values(reads))
   return Object.fromEntries(Object.keys(reads).map((k, n) => [k, values[n]])) as { [K in keyof typeof reads]: Awaited<(typeof reads)[K]> }
@@ -279,7 +283,7 @@ export const register: Register = on => {
     // One time for the whole drawing: what is live counts to it.
     const now = await $.clock.now()
     try {
-      const { snap, sk, runs, who, failed, shellsAll, stored, open, hist, mine, turnList, log, filter, pageOf, compacted, restartOf, fresh, promptOf, counted, pricedAt, proc, settingsAll, shownOf, shapeOf, memOf, instructionsOf, effortOf, scopeOf } = await pageState($)
+      const { snap, sk, runs, who, failed, shellsAll, stored, open, hist, mine, turnList, log, filter, pageOf, compacted, restartOf, fresh, promptOf, counted, pricedAt, proc, settingsAll, shownOf, shapeOf, memOf, instructionsOf, effortOf, scopeOf, economized } = await pageState($)
       // Older saved shapes lack the newer fields.
       const talk: Chat = { ...noChat(), ...(stored as Partial<Chat>) }
 
@@ -1302,6 +1306,23 @@ export const register: Register = on => {
         <RestartScreen ui={ui} host={restartHost} c={c} got={restartOf?.uuid === (c.uuid ?? '') ? restartOf : null} width={W} rowWidth={IW} onBack={go(from === 'log' ? 'log' : null)} />
       )
       const logBlock = isOk ? <EventLogBox ui={ui} width={W} actionWidth={EW - SPACE.indent} onRestart={openRestart} log={log} onAll={go('log')} isOpen={isOpen('log')} onToggle={toggle('log')} /> : null
+      // Read again as its fold opens, so what was just done or given back shows.
+      const economizerBlock = isOk && economized ? (
+        <EconomizerBox
+          ui={ui}
+          width={W}
+          e={economized}
+          summary={economizerSummary(economized)}
+          leftOut={toolGroups(economized.tools.applied)}
+          waiting={toolGroups(economized.tools.waiting)}
+          note={waitingNote(economized)}
+          isOpen={isOpen('economizer')}
+          onToggle={() => {
+            if (!isOpen('economizer')) void checkEconomizer($).catch(() => undefined)
+            return toggle('economizer')()
+          }}
+        />
+      ) : null
       const logView = (
         <EventLogScreen
           ui={ui}
@@ -1382,6 +1403,7 @@ export const register: Register = on => {
           {sessionBlock}
           {agentsBlock}
           {logBlock}
+          {economizerBlock}
           {/* The version at the left, so which copy runs can be seen; pressed, it opens the tabs of design tokens and UI components. Beside it the
               theme drawn, which a press switches. The report is a turn of the model's: it costs tokens, so it asks once more
               before it runs. Seldom wanted, it sits apart from every block, under the last, at the right, and dim. */}

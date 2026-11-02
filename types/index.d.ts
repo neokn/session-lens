@@ -71,6 +71,20 @@ export type Spend = { start: number; end: number; usd: number; byModel?: Record<
  */
 export type Reading = { start: number; at: number; usd: number; byModel?: Record<string, number>; proc?: number }
 
+/**
+ * What TokenEconomizer, another plugin, says it did in this repository. `tools.waiting` it has yet to write, `isPending` when
+ * it will write them by itself; `loop.stuck` counts its still-stuck notices; `overhead.share` is of its effective tokens.
+ */
+export type Economizer = {
+  sessions: number
+  turns: number
+  overhead: { tokens: number; share: number }
+  facts: { mode: string; count: number }
+  tools: { mode: string; sessions: number; prompts: number; applied: string[]; waiting: string[]; isPending: boolean; quietMinutes: number }
+  loop: { mode: string; redirects: number; stuck: number }
+  warnings: string[]
+}
+
 /** The session's total: what was measured, plus what the record says the rest cost, scaled by how far off the record was where both are known. */
 export type Ledger = { total: number; pm: number; snapped: number; estimated: number; raw: number; ratio?: number; ratios?: Record<string, { ratio: number; isOwn: boolean }>; isFull: boolean }
 
@@ -310,6 +324,8 @@ declare module 'claude-code' {
       effortAll: { status: 'pending' | 'ok' | 'error'; bySession: Record<string, { model: string; effort: string; calls: number; steps: number }[]> } | null
       /** Whether the effort page draws every session's turns or this one's. */
       effortScope: 'all' | 'this'
+      /** What TokenEconomizer did in this repository; null when it is not installed or did not answer as expected. */
+      economizer: Economizer | null
       /** `init:<category>` is the page of one part of main's Init, by the name /context gives it. */
       page: 'turns' | 'log' | 'tokens' | 'components' | 'effort' | `cmp:${'log' | 'main'}:${string}` | `init:${string}` | null
     }

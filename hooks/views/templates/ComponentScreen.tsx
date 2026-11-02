@@ -16,6 +16,7 @@ import { ComboTable } from '../organisms/ComboTable'
 import { Compactions } from '../organisms/Compactions'
 import { ContextGrid, type GridGroup, type Square } from '../organisms/ContextGrid'
 import { CostTable, type CostItem, type CostLine } from '../organisms/CostTable'
+import { EconomizerBox } from '../organisms/EconomizerBox'
 import { EventLogBox, LogHead } from '../organisms/EventLog'
 import { TurnBox } from '../organisms/TurnBox'
 import { TurnEntry } from '../organisms/TurnEntry'
@@ -78,6 +79,7 @@ export function ComponentScreen({ ui, width, rowWidth, version, tabs, frame, spi
     { ts: '2026-01-01T09:00:20.000Z', who: 'main', depth: 0, kind: 'reply', name: 'reply', o: 320, i: 42000, detail: 'A sample reply', turn: 3 },
   ]
   const lineW = Math.max(10, rowWidth - 46)
+  const economized = { sessions: 4, turns: 40, overhead: { tokens: 1200, share: 0.004 }, facts: { mode: 'on', count: 2 }, tools: { mode: 'auto', sessions: 4, prompts: 36, applied: ['LSP'], waiting: ['NotebookEdit', 'mcp__sample__a', 'mcp__sample__b'], isPending: true, quietMinutes: 60 }, loop: { mode: 'nudge', redirects: 1, stuck: 0 }, warnings: [] }
   const reqs: Req[] = [
     { who: 'main', depth: 0, no: 1, label: 'Read', startMs: 0, ms: 2000, i: 12000, o: 300, n: 1 },
     { who: 'main', depth: 0, no: 2, label: 'Bash', startMs: 2000, ms: 16000, i: 14000, o: 900, n: 1 },
@@ -138,6 +140,7 @@ export function ComponentScreen({ ui, width, rowWidth, version, tabs, frame, spi
       {entry('ComboTable', 'What each model and effort did a turn.', <ComboTable ui={ui} combos={combos} indent={0} rowWidth={rowWidth} />)}
       {entry('UseTable', 'What an agent used of one kind, by where each is defined.', <UseTable ui={ui} listKey="catalog-use" title="Tools" color={undefined} rows={uses} indent={0} nameWidth={28} pageOf={(_, total) => ({ shown: total })} />)}
       {entry('Compactions', 'Each compaction, from what to what and what it dropped.', <Compactions ui={ui} indent={0} shown={compactions} onOpen={() => idle} />)}
+      {entry('EconomizerBox', 'What TokenEconomizer did in this repository, and what it is about to do.', <EconomizerBox ui={ui} width={rowWidth} e={economized} summary="1 tool left out · 3 tools waiting to be left out" leftOut={[{ name: 'built-in', count: 1 }]} waiting={[{ name: 'sample', count: 2 }, { name: 'built-in', count: 1 }]} note="written by itself after 60 idle minutes here" isOpen onToggle={idle} />)}
       {entry('LogHead · EventLogBox', "The columns of the log, and the main page's box of its newest events.", <LogHead ui={ui} actionWidth={lineW} />, stage(11, <EventLogBox ui={ui} width={rowWidth} actionWidth={Math.max(10, lineW - SPACE.indent - 4)} onRestart={() => idle} log={events} onAll={idle} isOpen={beat % 2 === 0} onToggle={idle} />))}
     </Box>
   )

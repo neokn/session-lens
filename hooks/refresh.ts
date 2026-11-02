@@ -5,6 +5,7 @@ import type { Snapshot } from '../types'
 import { effortKey, effortSamplesOf } from './digest/effort'
 import { emptyRun, noChat, same } from './digest/record'
 import { clean, cleaned, parsed } from './digest/text'
+import { readEconomizer } from './record/economizer'
 import { linkSession, readHistory } from './record/transcript'
 import { ledgerKey, measuredOf, type Turn } from './state'
 
@@ -29,6 +30,7 @@ const history = atom({ plugin: 'session-lens', key: 'history' } as const, { stat
 const readings = atom({ plugin: 'session-lens', key: 'readings' } as const, [])
 const priced = atom({ plugin: 'session-lens', key: 'priced' } as const, [])
 const turnState = atom({ plugin: 'session-lens', key: 'turnState' } as const, { isBusy: false, hasHeardTurn: false, busySince: 0, busyText: '' } as Turn)
+const economizer = atom({ plugin: 'session-lens', key: 'economizer' } as const, null)
 
 // The read cycle: when the record is read again, what the reading stores, and the tickers that redraw the pane while
 // something moves. The tickers' frame and glide live here, not in an atom: a reload costs them one frame.
@@ -229,6 +231,8 @@ export async function refresh($: EngineInterface, isAsked = false) {
   cycle.rereadSince = cycle.frame
   if (cycle.isLoading || cycle.isRereading) tick($)
   cycle.hasReport = await findReport($)
+  // It starts Python twice, so not on every reading: as the pane opens, and as its fold does. The record does not wait for it.
+  if (isAsked || !cycle.hasReadOnce) void checkEconomizer($).catch(() => undefined)
   try {
     await readAll($)
   } finally {
@@ -395,6 +399,12 @@ export async function readVersion($: EngineInterface) {
   } catch {
     cycle.version = undefined
   }
+}
+
+// What TokenEconomizer did here; null when it is not installed, and the pane draws nothing of it.
+export async function checkEconomizer($: EngineInterface) {
+  const found = await readEconomizer($)
+  await update($, economizer, () => found)
 }
 
 // Whether session-report is installed, asked as its fold opens; without it, where its marketplace is.

@@ -250,6 +250,14 @@ MUTANTS = [
      "linkedFile(link[2], path, above[0] ?? path)", "linkedFile(link[2], path, path)"),
     ("hooks/views/organisms/ContextGrid.tsx", "a long name cuts the › of a part that opens a page",
      "fit(p.page ? `${cut(p.name, keyW - 19)} ${G.page}` : cut(p.name, keyW - 17), keyW - 17)", "fit(cut(p.page ? `${p.name} ${G.page}` : p.name, keyW - 17), keyW - 17)"),
+    ("hooks/digest/economizer.ts", "a figure TokenEconomizer stopped giving is drawn as if nothing happened",
+     "if (!figures.every(isNum) || ", "if ("),
+    ("hooks/digest/economizer.ts", "a tool the person gave back still counts as waiting",
+     "clean(proposed).split(', ').filter(Boolean)", "texts(t.proposal)"),
+    ("hooks/refresh.ts", "TokenEconomizer is asked again at every reading",
+     "if (isAsked || !cycle.hasReadOnce) void checkEconomizer", "void checkEconomizer"),
+    ("hooks/register.tsx", "the fold shows what was read when the pane opened",
+     "if (!isOpen('economizer')) void checkEconomizer($).catch(() => undefined)", ""),
 ]
 
 def run():
