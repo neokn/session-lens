@@ -1,0 +1,1184 @@
+<title>Auto-compact 分析</title>
+<meta charset="utf-8">
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* layout: three filters above everything, the figures, the charts of what the logs show, then the setting to try */
+:root {
+  --bg: #f4f6f8; --panel: #ffffff; --fg: #15191e; --muted: #5a636e; --line: #d9dee4; --grid: #e8ebef;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100; --s5: #6250d6; --good: #137a4b; --bad: #b3261e; --tint: #e9f1fb;
+  --sans: -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #11151a; --panel: #1a2027; --fg: #e8ecf1; --muted: #a2acb8; --line: #2c343d; --grid: #242b33; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #9085e9; --good: #4cc38a; --bad: #ef7b73; --tint: #1b2a3b; color-scheme: dark }
+}
+:root[data-theme="dark"] { --bg: #11151a; --panel: #1a2027; --fg: #e8ecf1; --muted: #a2acb8; --line: #2c343d; --grid: #242b33; --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #9085e9; --good: #4cc38a; --bad: #ef7b73; --tint: #1b2a3b; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: 15px; line-height: 1.5; margin: 0; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 24px 40px }
+[hidden] { display: none !important }
+.wrap { max-width: 1120px; margin-inline: auto; display: flex; flex-direction: column; gap: 16px }
+.stack { display: flex; flex-direction: column; gap: 16px; min-width: 0 }
+h1 { font-size: 24px; font-weight: 600; margin: 0; text-wrap: balance }
+h2 { font-size: 18px; font-weight: 600; margin: 8px 0 0 }
+h3 { font-size: 15px; font-weight: 600; margin: 0 }
+p { margin: 0; max-width: 72ch }
+.note { color: var(--muted); font-size: 13px }
+.warn { color: var(--bad); font-size: 13px }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0 }
+.filters { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; flex-direction: row; flex-wrap: wrap; gap: 10px 24px; padding: 10px 16px }
+.filter { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0 }
+.filter > span { color: var(--muted); font-size: 13px }
+.seg { display: flex; flex-wrap: wrap; gap: 4px }
+button { font: inherit; font-size: 13px; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; min-height: 32px; cursor: pointer }
+button:hover:not(:disabled) { border-color: var(--s1) }
+button:disabled { opacity: .45; cursor: default }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px }
+button[aria-pressed="true"] { background: var(--tint); border-color: var(--s1); font-weight: 600 }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 11.5rem), 1fr)); gap: 12px }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 2px; min-width: 0 }
+.tile .label { color: var(--muted); font-size: 13px }
+.tile .value { font-size: 24px; font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1.3 }
+.tile .sub { color: var(--muted); font-size: 12px }
+.tile.lead { background: var(--tint); border-color: var(--s1) }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 26rem), 1fr)); gap: 16px }
+.verdict { font-size: 18px; font-weight: 500 }
+.verdict .good { color: var(--good); font-weight: 600 }
+.verdict .bad { color: var(--bad); font-weight: 600 }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: 16px }
+.control { display: flex; flex-direction: column; gap: 8px; min-width: 0 }
+.control label { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-weight: 600 }
+.control output { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 600 }
+input[type=range] { width: 100%; accent-color: var(--s1); min-height: 28px; margin: 0 }
+input[type=range]:disabled { opacity: .35 }
+.buttons { display: flex; flex-wrap: wrap; gap: 8px }
+.legendbar { display: flex; flex-wrap: wrap; gap: 8px 24px }
+.hero { gap: 14px; border-color: var(--s1) }
+.heroMain { display: flex; flex-direction: column; gap: 4px }
+.heroLabel { color: var(--muted); font-size: 13px }
+.heroValue { font-family: var(--mono); font-size: 40px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--muted); align-items: center }
+.legend span { display: inline-flex; align-items: center; gap: 6px }
+.legend i.line { display: inline-block; width: 16px; height: 0; border-top: 2px solid var(--muted) }
+.legend i.dash { border-top-style: dashed }
+.legend svg { width: 12px; height: 12px; flex: none }
+.viewcards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: 8px }
+.viewcard { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 8px 12px; text-align: left; min-width: 0 }
+.viewname { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 400 }
+.viewname svg { width: 28px; height: 8px; flex: none }
+.viewcost { font-size: 20px; font-weight: 500; font-variant-numeric: tabular-nums }
+.viewsub { color: var(--muted); font-size: 12px; font-weight: 400 }
+.legend i.box { display: inline-block; width: 12px; height: 12px; border-radius: 2px }
+.legend i.swatch { display: inline-block; width: 16px; height: 10px; background: var(--tint); border: 1px solid var(--line) }
+.chart { position: relative; width: 100% }
+.chart svg { display: block; width: 100%; height: auto; touch-action: pan-y }
+.chart text { font-family: var(--sans); font-size: 12px; fill: var(--muted) }
+.chart text.strong { fill: var(--fg); font-weight: 600 }
+.empty { color: var(--muted); font-size: 13px; padding: 40px 0; text-align: center }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,.18); padding: 6px 10px; font-size: 12px; line-height: 1.5; white-space: nowrap; z-index: 2 }
+.tablewrap { overflow-x: auto }
+table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums }
+th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap }
+th { color: var(--muted); font-weight: 500 }
+th:first-child, td:first-child { text-align: left }
+tr.picked td { background: var(--tint); font-weight: 600 }
+.tablewrap.tall { max-height: 320px; overflow: auto }
+.tablewrap.tall th { position: sticky; top: 0; background: var(--panel) }
+td.none { color: var(--muted); text-align: left; border-bottom: 0 }
+</style>
+
+<div class="wrap" id="loader">
+  <h1 data-en="Auto-compact analysis">Auto-compact 分析</h1>
+  <div class="panel" id="dropzone">
+    <p data-en="Reading report.json…" id="loaderText">正在讀取 report.json…</p>
+    <p data-en="Open it with &lt;code&gt;report.sh&lt;/code&gt; to load it by itself, or choose or drop the report.json it writes here." class="note" id="loaderHelp" hidden>用 <code>report.sh</code> 開啟可以自動載入。也可以在這裡選擇或拖放它產生的 report.json。</p>
+    <input type="file" id="loaderFile" accept="application/json,.json" hidden data-en-label="Choose report.json" aria-label="選擇 report.json">
+  </div>
+</div>
+
+<div class="wrap" id="app" hidden>
+  <h1 data-en="Auto-compact analysis">Auto-compact 分析</h1>
+  <p class="note" id="generated"></p>
+
+  <div class="panel filters" id="filters">
+    <div class="filter"><span data-en="Scope">範圍</span><div class="seg" id="fScope"></div></div>
+    <div class="filter"><span data-en="Language">語言</span><div class="seg" id="fLang"></div></div>
+  </div>
+  <p class="warn" id="caution" hidden></p>
+
+  <section class="panel hero" id="hero">
+    <div class="heroMain">
+      <p data-en="Recommended autoCompactWindow" class="heroLabel" id="heroLabel">建議的 autoCompactWindow</p>
+      <p class="heroValue" id="heroValue">—</p>
+      <p class="note" id="heroFloor" hidden></p>
+      <p class="verdict" id="heroVerdict"></p>
+    </div>
+    <div class="tiles" id="heroTiles"></div>
+    <h3 data-en="By model">依模型分開設定</h3>
+    <div class="tablewrap"><table id="heroModels"></table></div>
+    <p class="note" id="heroNote"></p>
+  </section>
+
+  <h2 data-en="What a setting costs">設定試算</h2>
+  <div id="calc" class="stack">
+    <div class="tiles" id="tilesCalc"></div>
+    <div class="panel">
+      <h3 data-en="Prices (per 1M tokens)">定價（每 100 萬 token）</h3>
+      <div class="tablewrap"><table id="prices"></table></div>
+      <p data-en="Cache writes split into 5m and 1h by the normal share in your records." class="note">Cache 寫入依紀錄的常態比例計算 5m 和 1h。</p>
+      <p class="warn" id="priceWarnings" hidden></p>
+    </div>
+    <div class="panel">
+      <p class="verdict" id="verdict" aria-live="polite"></p>
+      <p class="note" id="reach"></p>
+    </div>
+    <div class="panel controls">
+      <div class="control">
+        <label for="initial"><span>Initial context</span><output id="initialOut" for="initial"></output></label>
+        <input type="range" id="initial" min="10000" max="400000" step="1000">
+        <div class="buttons"><button type="button" id="initialReset"></button></div>
+      </div>
+      <div class="control">
+        <label for="setting"><span>autoCompactWindow</span><output id="settingOut" for="setting"></output></label>
+        <input type="range" id="setting" min="100000" max="1000000" step="1000">
+        <div class="buttons">
+          <button data-en="Go to recommended" type="button" id="toRecommended">切到建議值</button>
+          <button type="button" id="toCurrent"></button>
+          <button data-en="Turn auto-compact off" type="button" id="toOff" aria-pressed="false">關閉 auto-compact</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3 data-en="Total cost for the context to reach 1M, by setting">跑到 context 累積滿 1M 的總成本，隨設定值變化</h3>
+      <p data-en="Every setting makes the same number of requests: as many as it takes, at the input and output of this selection, for the context to reach 1M without compacting. Lower is cheaper; the teeth are where the number of compactions changes." class="note">每個設定都做同樣多的請求：依這個篩選的 input 和 output，不壓縮時 context 累積滿 1M 要做幾次。越低越省，鋸齒是壓縮次數改變的地方。</p>
+      <div class="legend">
+        <span data-en="Total cost"><i class="line" style="border-top-color:var(--fg)"></i>總成本</span>
+        <span data-en="Auto-compact off"><i class="line dash"></i>關閉 auto-compact</span>
+      </div>
+      <div class="chart" id="cost"></div>
+    </div>
+    <div class="panel">
+      <h3 data-en="The same work: how the context grows, what each request costs">同一段工作，context 怎麼長、每次請求花多少</h3>
+      <p data-en="The same number of requests. The lines are the context under each of three settings (left axis), and the dots the compactions of the one selected. The bars are the cost per request of the one selected (right axis), the average and make-up of each stretch; the cards above switch them. A compaction is paid in the stretch where it happens, hence the spikes. Lines and bars have separate scales, so where they cross means nothing." class="note">同樣的請求數。線是三個設定各自的 context（左軸），圓點是選中那組的壓縮。柱子是選中那組每次請求的成本（右軸），是那段的平均和組成，點上面的卡片切換。壓縮的費用算在發生的那一段，所以會有尖峰。線和柱子的刻度各自獨立，交叉點沒有意義。</p>
+      <div class="viewcards" id="growView"></div>
+      <div class="legend">
+        <span data-en="Cache read"><i class="box" data-color-box="s1"></i>Cache 讀取</span>
+        <span data-en="Cache write 1h"><i class="box" data-color-box="s2"></i>Cache 寫入 1h</span>
+        <span data-en="Cache write 5m"><i class="box" data-color-box="s3"></i>Cache 寫入 5m</span>
+        <span data-en="Input (uncached)"><i class="box" data-color-box="s5"></i>Input（未快取）</span>
+        <span><i class="box" data-color-box="s4"></i>Output</span>
+      </div>
+      <div class="chart" id="growth"></div>
+    </div>
+    <div class="panel">
+      <h3 data-en="Compared">比較</h3>
+      <div class="tablewrap"><table id="table"></table></div>
+      <p class="note" id="basis"></p>
+      <p data-en="The cost is a model that adds up normal requests, not a bill forecast. The occasional large request is not in the normal value, so a real context grows faster than drawn, and only long sessions that reach compaction are affected. Idle compaction ignores this setting and is left out; what a compaction loses in context is not priced. A larger initial context leaves fewer requests before 1M, so compare totals at one initial context, not across them. When the initial context changes, what a compaction leaves and rewrites to cache is assumed to change by the same amount." class="note">成本是常態請求累加出來的模型估算，不是帳單預測；偶爾的大請求不在常態值裡，實際 context 會長得比圖上快，也只算有跑到觸發點的長 session。閒置壓縮不受這個設定影響，沒有算進來；壓縮損失的上下文也沒有計價。Initial context 越大，累積滿 1M 前能做的請求越少，所以不同 initial context 的總成本不能直接相比，要看同一個 initial context 下誰比較省。Initial context 改變時，假設壓縮後留下的量和要重新寫入 cache 的量也跟著增減同樣多。</p>
+    </div>
+  </div>
+  <p data-en="This model has no price, so no cost can be estimated." class="note" id="noprice" hidden>這個模型沒有價格資料，無法試算成本。</p>
+  <h2 data-en="Compaction">壓縮</h2>
+  <div class="tiles" id="tilesCompact"></div>
+  <div class="panel">
+    <h3 data-en="Before and after compaction">壓縮前 vs 壓縮後</h3>
+    <p data-en="Each compaction has two points, one above the other: the summary, and what is actually sent after compacting (the summary plus the initial context that comes back). The solid lines are their ordinary least squares regressions, with outliers judged by externally studentized residual |t| > 2. The x axis leaves out the initial context, as it is not what gets compacted." class="note">每次壓縮有兩個點上下對齊：摘要，以及壓縮後實際送出的大小（摘要加上重新帶回的 initial context）。兩條實線是各自的最小平方法線性回歸，離群值以外部學生化殘差 |t| > 2 判定。橫軸不含 initial，因為它不是被壓縮的內容。</p>
+    <div class="legend">
+      <span data-en="Sent after compaction"><i class="dot" data-color="s2"></i>壓縮後實際送出</span>
+      <span data-en="Summary"><i class="dot" data-color="s1"></i>摘要</span>
+      <span data-en="Lighter = subagent"><svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill-opacity=".4" style="fill:var(--muted)"/></svg>較淡 = subagent</span>
+      <span data-en="Idle"><svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" style="fill:var(--muted)"/></svg>閒置</span>
+      <span data-en="Threshold"><svg viewBox="0 0 12 12"><path d="M6 1 L11 6 L6 11 L1 6 Z" style="fill:var(--muted)"/></svg>門檻觸發</span>
+      <span data-en="Manual"><svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="4" fill="none" stroke-width="2" style="stroke:var(--muted)"/></svg>手動</span>
+      <span data-en="Excluded"><svg viewBox="0 0 12 12"><path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5" stroke-width="2" style="stroke:var(--muted)"/></svg>已排除</span>
+    </div>
+    <div class="chart" id="compress"></div>
+    <p class="note" id="fitNote"></p>
+    <p class="note" id="fitNoteSent"></p>
+  </div>
+  <div class="panel">
+    <h3 data-en="Compaction estimate: ratio or size after compaction">壓縮試算：用壓縮比還是壓縮後大小</h3>
+    <p class="verdict" id="howVerdict"></p>
+    <p class="note" id="howNote"></p>
+    <div class="two">
+      <div class="stack">
+        <h3 data-en="Ratio of each compaction (without initial)">每次的壓縮比（不含 initial）</h3>
+        <div class="chart" id="eachRatio"></div>
+      </div>
+      <div class="stack">
+        <h3 data-en="Size after each compaction (without initial)">每次壓縮後的大小（不含 initial）</h3>
+        <div class="chart" id="eachSize"></div>
+      </div>
+    </div>
+    <div class="legend">
+      <span data-en="Each compaction, oldest to newest"><i class="dot" data-color="s1"></i>每次壓縮，由舊到新</span>
+      <span data-en="Normal value"><i class="line"></i>常態值</span>
+      <span data-en="Normal value ±1 standard deviation"><i class="swatch"></i>常態值 ±1 個標準差</span>
+      <span data-en="Excluded (|z| > 2)"><svg viewBox="0 0 12 12"><path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5" stroke-width="2" style="stroke:var(--muted)"/></svg>已排除（|z| > 2）</span>
+      <span><svg viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.5" fill-opacity=".4" style="fill:var(--s1)"/></svg>subagent</span>
+    </div>
+    <h3 data-en="Excluded compactions" id="droppedCompactionsTitle">被排除的壓縮</h3>
+    <div class="tablewrap tall"><table id="droppedCompactions"></table></div>
+  </div>
+  <div class="panel">
+    <h3 data-en="By kind of compaction">依壓縮類型</h3>
+    <div class="tablewrap"><table id="kinds"></table></div>
+    <p data-en="“Idle” is inferred: the records mark idle and threshold both as auto, so idle here means 50 minutes or more of idling above 200K." class="note">「閒置」是從紀錄推斷的：紀錄把閒置和門檻觸發都標成 auto，這裡以閒置 50 分鐘以上且超過 200K 判定。</p>
+  </div>
+
+  <h2 data-en="Input / Output (no compaction)">Input / Output（不含壓縮）</h2>
+  <div class="tiles" id="tilesUsage"></div>
+  <div class="panel">
+    <h3 data-en="Each request: how much output its input brings">每次請求：input 帶來多少 output</h3>
+    <p data-en="Log-log scale; the cross is the normal request. The orange line is the ordinary least squares regression of normal requests, excluding |t| > 2." class="note">雙對數刻度，十字是常態的一次請求。橘線是一般請求的最小平方法線性回歸，排除 |t| > 2。</p>
+    <div class="legend">
+      <span data-en="Without initial (normal requests)"><i class="dot" data-color="s1"></i>去除 initial（一般請求）</span>
+      <span data-en="First request of a session (initial)"><i class="dot" data-color="s2"></i>session 第一個請求（initial）</span>
+      <span data-en="Excluded"><svg viewBox="0 0 12 12"><path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5" stroke-width="2" style="stroke:var(--muted)"/></svg>已排除</span>
+    </div>
+    <div class="chart" id="inout"></div>
+    <p class="note" id="inoutNote"></p>
+    <p class="note" id="sampled" hidden></p>
+    <h3 data-en="Excluded requests" id="droppedRequestsTitle">被排除的請求</h3>
+    <p data-en="The normal value uses |z| > 2 and the regression |t| > 2, so they do not exclude exactly the same requests." class="note">常態值用 |z| > 2，回歸線用 |t| > 2，所以兩者排除的不完全相同。</p>
+    <div class="tablewrap tall"><table id="droppedRequests"></table></div>
+  </div>
+</div>
+
+<script src="report.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+// The language chosen on the page, or else the browser's: any zh is Taiwanese traditional Chinese, and all else English.
+const chosenLanguage = () => {
+  const inUrl = /lang=(zh|en)/.exec(location.hash)?.[1];
+  if (inUrl) return inUrl;
+  try { return localStorage.getItem('autocompact-language'); } catch { return null; }
+};
+let zh = chosenLanguage() ? chosenLanguage() === 'zh' : /^zh\b/i.test(navigator.language ?? '');
+const zhEn = (chinese, english) => (zh ? chinese : english);
+const compactions = (n) => `${n} compaction${n === 1 ? '' : 's'}`;
+// The page's own text, as written, for going back to Chinese.
+document.querySelectorAll('[data-en]').forEach((el) => {
+  el.dataset.zh = el.children.length && !el.querySelector('code') ? el.lastChild.textContent : el.innerHTML;
+});
+document.querySelectorAll('[data-en-label]').forEach((el) => { el.dataset.zhLabel = el.getAttribute('aria-label'); });
+const showLanguage = () => {
+  document.documentElement.lang = zh ? 'zh-TW' : 'en';
+  document.title = zhEn('Auto-compact 分析', 'Auto-compact analysis');
+  document.querySelectorAll('[data-en]').forEach((el) => {
+    const text = zh ? el.dataset.zh : el.dataset.en;
+    if (el.children.length && !el.querySelector('code')) el.lastChild.textContent = text;
+    else el.innerHTML = text;
+  });
+  document.querySelectorAll('[data-en-label]').forEach((el) => el.setAttribute('aria-label', zh ? el.dataset.zhLabel : el.dataset.enLabel));
+};
+const chooseLanguage = (language) => {
+  zh = language === 'zh';
+  try { localStorage.setItem('autocompact-language', language); } catch { /* The address still carries it. */ }
+  try { location.replace(`#lang=${language}`); } catch { /* It lasts until the page is opened again. */ }
+  showLanguage();
+};
+showLanguage();
+
+function start(D) {
+$('loader').hidden = true;
+$('app').hidden = false;
+const k = (v) => (v == null ? '—' : `${+(v / 1000).toFixed(v >= 10000 ? 0 : v >= 10 ? 2 : 3)}K`);
+const x1 = (v) => (v == null ? '—' : `${v.toFixed(1)}×`);
+const usd = (v) => `$${v.toFixed(2)}`;
+const M = 1e6;
+// What is worded once and kept, worded again when the language changes.
+let LABEL, KIND, PARTS;
+const reword = () => {
+  LABEL = { opus: 'Opus', sonnet: 'Sonnet', fable: 'Fable', haiku: 'Haiku', other: zhEn('其他', 'Other') };
+  KIND = { manual: zhEn('手動', 'Manual'), threshold: zhEn('門檻觸發', 'Threshold'), idle: zhEn('閒置', 'Idle') };
+  PARTS = [['read', zhEn('Cache 讀取', 'Cache read'), 'var(--s1)'], ['write1h', zhEn('Cache 寫入 1h', 'Cache write 1h'), 'var(--s2)'], ['write5m', zhEn('Cache 寫入 5m', 'Cache write 5m'), 'var(--s3)'], ['input', zhEn('Input（未快取）', 'Input (uncached)'), 'var(--s5)'], ['output', 'Output', 'var(--s4)']];
+  $('generated').textContent = zhEn(`資料時間 ${new Date(D.now * 1000).toLocaleString(zh ? 'zh-TW' : 'en')}，重新執行 report.sh 後重新整理即可更新。`, `Data from ${new Date(D.now * 1000).toLocaleString(zh ? 'zh-TW' : 'en')}. Run report.sh again and reload to update.`);
+};
+reword();
+
+const requests = D.requests.map(([ts, g, o, ctx, init, first, model, here, session, i, w5, w1, id, project]) => ({ ts, g, o, ctx, init, first: !!first, model, here: !!here, session, i, w5, w1, id, project }));
+const comps = D.compactions;
+
+const mean = (a) => (a.length ? a.reduce((s, v) => s + v, 0) / a.length : null);
+const median = (a) => { if (!a.length) return null; const s = [...a].sort((p, q) => p - q), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const logs = (a) => a.filter((v) => v > 0).map(Math.log);
+const geo = (a) => { const l = logs(a); return l.length ? Math.exp(mean(l)) : null; };
+// One request's input and output belong together: either more than 2 deviations out drops the pair, once, and both means come from the pairs kept.
+function requestNormal(rows) {
+  const pairs = rows.filter((r) => r.g > 0 && r.o > 0);
+  if (!pairs.length) return { g: null, o: null, n: 0, kept: [], dropped: [] };
+  const stats = (key) => { const l = pairs.map((r) => Math.log(r[key])), m = mean(l); return { m, s: l.length > 1 ? Math.sqrt(l.reduce((sum, v) => sum + (v - m) ** 2, 0) / (l.length - 1)) : 0 }; };
+  const gs = stats('g'), os = stats('o');
+  const within = (v, st) => st.s === 0 || Math.abs((Math.log(v) - st.m) / st.s) <= 2;
+  const near = pairs.filter((r) => within(r.g, gs) && within(r.o, os));
+  const kept = pairs.length >= 3 && near.length >= 3 ? near : pairs;
+  const zg = (r) => (gs.s ? (Math.log(r.g) - gs.m) / gs.s : 0), zo = (r) => (os.s ? (Math.log(r.o) - os.m) / os.s : 0);
+  return { g: geo(kept.map((r) => r.g)), o: geo(kept.map((r) => r.o)), n: kept.length, kept, dropped: pairs.filter((r) => !kept.includes(r)).map((r) => ({ r, zg: zg(r), zo: zo(r) })) };
+}
+const fmtRange = (a) => (a.length ? `${x1(Math.min(...a))}–${x1(Math.max(...a))}` : '—');
+
+const state = { scope: 'all', I: null, window: null, isOff: false, followI: true, followWindow: true, growView: 'best' };
+
+// Each compaction has its own ratio and size. In log space: what is more than 2 deviations out is dropped, once, and the mean is the normal value.
+function logStats(rows, value) {
+  const usable = rows.filter((c) => value(c) > 0);
+  if (!usable.length) return null;
+  const stats = (list) => { const l = list.map((c) => Math.log(value(c))), m = mean(l); return { m, sd: l.length > 1 ? Math.sqrt(l.reduce((sum, v) => sum + (v - m) ** 2, 0) / (l.length - 1)) : 0 }; };
+  const all = stats(usable);
+  const near = usable.filter((c) => all.sd === 0 || Math.abs((Math.log(value(c)) - all.m) / all.sd) <= 2);
+  const kept = usable.length >= 3 && near.length >= 3 ? near : usable;
+  const { m, sd } = stats(kept);
+  return { n: kept.length, kept, dropped: usable.filter((c) => !kept.includes(c)), zOf: (c) => (all.sd ? (Math.log(value(c)) - all.m) / all.sd : 0), sd, normal: Math.exp(m), low: Math.exp(m - sd), high: Math.exp(m + sd) };
+}
+// The steadier of the two, unit for unit, is what the cost assumes. Too little difference to tell stays a fixed size.
+function assumption(rows) {
+  const usable = rows.filter((c) => c.compacted > 0);
+  const ratio = logStats(usable, (c) => c.compacted / c.post), size = logStats(usable, (c) => c.post);
+  const model = ratio && size && ratio.n >= 3 && ratio.normal > 1 && ratio.sd < 0.9 * size.sd ? 'ratio' : 'fixed';
+  return { ratio, size, model };
+}
+
+// Ordinary least squares, after = a + b × before. It passes through the means, so its ratio is Σbefore ÷ Σafter, the one a sum of costs needs.
+const T_975 = [12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131, 2.12, 2.11, 2.101, 2.093, 2.086, 2.08, 2.074, 2.069, 2.064, 2.06, 2.056, 2.052, 2.048, 2.045, 2.042];
+function ols(points) {
+  const n = points.length, mx = mean(points.map((p) => p.x)), my = mean(points.map((p) => p.y));
+  const sxx = points.reduce((s, p) => s + (p.x - mx) ** 2, 0), syy = points.reduce((s, p) => s + (p.y - my) ** 2, 0);
+  const b = sxx ? points.reduce((s, p) => s + (p.x - mx) * (p.y - my), 0) / sxx : 0, a = my - b * mx;
+  const residual = (p) => p.y - (a + b * p.x), sse = points.reduce((s, p) => s + residual(p) ** 2, 0);
+  const se = n > 2 && sxx ? Math.sqrt(sse / (n - 2) / sxx) : null;
+  const margin = se == null ? null : se * (T_975[n - 3] ?? 1.96);
+  return { n, a, b, mx, my, sxx, sse, residual, r2: syy ? 1 - sse / syy : null, se, low: margin == null ? null : b - margin, high: margin == null ? null : b + margin, ratio: mx / my };
+}
+// Externally studentized residuals, judged once: a point is measured against the line's spread with that point left out.
+function studentized(points, fit) {
+  if (fit.n < 4 || !fit.sxx) return points.map(() => 0);
+  return points.map((p) => {
+    const h = 1 / fit.n + (p.x - fit.mx) ** 2 / fit.sxx, e = fit.residual(p);
+    const rest = (fit.sse - e * e / (1 - h)) / (fit.n - 3);
+    // No spread left without this point: the others lie on a line, and this one is off it if it has any residual.
+    return rest > 0 ? e / Math.sqrt(rest * (1 - h)) : Math.abs(e) > 1e-6 ? Infinity : 0;
+  });
+}
+const OUTLIER_T = 2;
+const pureRatios = (list) => list.filter((c) => c.post > 0 && c.compacted > 0).map((c) => c.compacted / c.post);
+// Output against input, each in logs, as the chart draws them: a straight line there. Its outliers are always left out.
+function inOutLine(rows) {
+  const points = rows.filter((r) => r.g > 0 && r.o > 0).map((r) => ({ x: Math.log(r.g), y: Math.log(r.o), r }));
+  if (points.length < 3) return null;
+  const whole = ols(points), t = studentized(points, whole);
+  const near = points.filter((p, i) => Math.abs(t[i]) <= OUTLIER_T);
+  const kept = near.length >= 3 ? near : points;
+  const out = kept === points ? [] : points.map((p, i) => ({ r: p.r, t: t[i] })).filter(({ t: v }) => Math.abs(v) > OUTLIER_T);
+  return { ...ols(kept), kept, dropped: out };
+}
+function regress(points) {
+  const usable = points.filter((p) => p.x > 0 && p.y > 0);
+  if (usable.length < 2) return null;
+  const whole = ols(usable), t = studentized(usable, whole);
+  const near = usable.filter((p, i) => Math.abs(t[i]) <= OUTLIER_T);
+  const kept = near.length >= 3 ? near : usable;
+  return { ...ols(kept), kept, dropped: usable.filter((p) => !kept.includes(p)), tOf: (p) => t[usable.indexOf(p)] };
+}
+// Both sizes are drawn against what was compacted.
+function fitOf(list, kind) {
+  return regress(list.filter((c) => c[kind] != null && c.compacted > 0).map((c) => ({ x: c.compacted, y: c[kind], c })));
+}
+
+const inScope = (r, sel) => (sel.scope === 'all' || r.here) && (sel.model === 'all' || r.model === sel.model);
+const since = (days) => D.now - days * 86400;
+
+// The last day pulled toward the period's normal value by how far it can be trusted: partial pooling on the logs of each day's projects, or sessions when all are one project.
+function recency(rows, value, base) {
+  const flat = { value: base, weight: 0 };
+  const usable = rows.filter((r) => value(r) > 0);
+  const by = new Set(usable.map((r) => r.project)).size > 1 ? 'project' : 'session';
+  const days = [...d3Group(usable, (r) => Math.floor((D.now - r.ts) / 86400)).entries()].map(([age, list]) => {
+    const means = [...d3Group(list, (r) => r[by]).values()].map((units) => mean(units.map((r) => Math.log(value(r)))));
+    return { age, means, m: means.length, mean: mean(means) };
+  });
+  const variance = (a) => { const m = mean(a); return a.reduce((s, v) => s + (v - m) ** 2, 0) / (a.length - 1); };
+  const several = days.filter((d) => d.m > 1), df = several.reduce((s, d) => s + d.m - 1, 0), today = days.find((d) => d.age === 0);
+  if (base == null || days.length < 3 || !df || !today) return flat;
+  const within = several.reduce((s, d) => s + variance(d.means) * (d.m - 1), 0) / df;
+  const between = Math.max(0, variance(days.map((d) => d.mean)) - within * mean(days.map((d) => 1 / d.m)));
+  const noise = between + within / today.m;
+  const weight = noise > 0 ? Math.min(0.5, between / noise) : 0;
+  return { value: Math.exp(weight * today.mean + (1 - weight) * Math.log(base)), weight, today: Math.exp(today.mean), units: today.m, by };
+}
+
+// Every figure a selection draws from. The same rules as recommend.sh, so all projects and models give its numbers.
+function figures(sel) {
+  const scoped = requests.filter((r) => inScope(r, sel));
+  const inWindow = scoped.filter((r) => r.ts >= since(30));
+  const normal = inWindow.filter((r) => !r.first), firsts = inWindow.filter((r) => r.first);
+  const shown = comps.filter((c) => c.ts >= since(30) && (sel.scope === 'all' || c.here) && (sel.model === 'all' || c.model === sel.model));
+  const main = (list) => list.filter((c) => c.scope === 'main');
+  const basisOf = () => {
+    if (shown.length) return { list: shown, from: null };
+    return comps.length ? { list: comps, from: 'all' } : { list: [], from: 'assumed' };
+  };
+  const basis = basisOf();
+  // What a compaction sends again holds the initial context of its own agent, and the cost follows the main session.
+  const sent = main(basis.list).length ? main(basis.list) : main(comps);
+  const startsAll = scoped.filter((r) => r.first).sort((a, b) => a.ts - b.ts);
+  const everyStart = requests.filter((r) => r.first).sort((a, b) => a.ts - b.ts);
+  const initialNow = median((startsAll.length ? startsAll : everyStart).slice(-5).map((r) => r.ctx));
+  const f = {
+    sel, normal, firsts, shown, inWindow,
+    request: requestNormal(normal),
+    initialNow,
+    initialBase: median(firsts.map((r) => r.ctx)) ?? initialNow,
+    basisFrom: basis.from,
+    how: assumption(basis.list),
+    after: geo(sent.filter((c) => c.after != null).map((c) => c.after)) ?? (initialNow ?? 60000) + 30000,
+    write: geo(sent.filter((c) => c.write != null).map((c) => c.write)) ?? (initialNow ?? 60000) + 30000,
+    peaks: [...d3Group(inWindow, (r) => r.session).values()].map((rows) => Math.max(...rows.map((r) => r.ctx))),
+  };
+  // The cost leans toward the last day.
+  const lean = (value, base) => recency(f.request.kept, value, base);
+  f.recent = { g: lean((r) => r.g, f.request.g), o: lean((r) => r.o, f.request.o) };
+  f.g = f.recent.g.value; f.o = f.recent.o.value;
+  // A request writes to one cache lifetime or the other, so its share is 0 or 1: each lifetime gets its normal size, and the share is what those sizes come to.
+  const fiveOf = (list) => {
+    const sized = (key) => { const rows = list.filter((r) => r[key] > 0); return rows.length * (logStats(rows, (r) => r[key])?.normal ?? 0); };
+    const fiveSize = sized('w5'), hourSize = sized('w1');
+    return fiveSize + hourSize > 0 ? fiveSize / (fiveSize + hourSize) : 0;
+  };
+  f.five = (1 - f.recent.g.weight) * fiveOf(normal) + f.recent.g.weight * fiveOf(normal.filter((r) => r.ts >= since(1)));
+  f.uncached = Math.min(lean((r) => r.i, logStats(normal.filter((r) => r.i > 0), (r) => r.i)?.normal ?? 0).value, f.g ?? 0);
+  f.summary = f.how.size?.normal ?? 30000;
+  f.count = basis.list.filter((c) => c.compacted > 0).length;
+  f.tooFew = f.count < D.enough;
+  f.model = f.how.model;
+  f.ratio = f.how.ratio?.normal ?? null;
+  if (sel.model === 'all') {
+    const n = { sonnet: 0, opus: 0, fable: 0 };
+    normal.forEach((r) => { if (r.model in n) n[r.model] += 1; });
+    const t = n.sonnet + n.opus + n.fable;
+    f.models = t ? Object.keys(n).map((m) => ({ name: m, p: D.prices[m], w: n[m] / t })) : [{ name: 'sonnet', p: D.prices.sonnet, w: 0.5 }, { name: 'opus', p: D.prices.opus, w: 0.5 }];
+  } else {
+    f.models = D.prices[sel.model] ? [{ name: sel.model, p: D.prices[sel.model], w: 1 }] : null;
+  }
+  f.canPrice = !!f.models && f.g > 0 && f.o > 0 && f.count > 0;
+  if (f.canPrice) {
+    f.recommended = suggested(f.initialNow, f);
+  }
+  return f;
+}
+function d3Group(list, key) { const m = new Map(); list.forEach((v) => { const id = key(v); if (!m.has(id)) m.set(id, []); m.get(id).push(v); }); return m; }
+
+// A compaction leaves a summary and sends the initial context again: its summary is a fixed size, or what was compacted over a ratio.
+const left = (c, I, f) => {
+  const d = I - f.initialBase, s = f.model === 'ratio' ? Math.max(c - I, 0) / f.ratio : f.summary;
+  return { summary: s, after: s + Math.max(f.after + d - f.summary, 0), write: Math.max(s + f.write + d - f.summary, 0) };
+};
+// The work it takes the context to reach 1M without compacting, at this selection's input and output.
+const requestsToFull = (I, f) => Math.max(1, Math.floor((D.full - f.o - I) / f.g) + 1);
+const plan = (T, I, f) => {
+  let remaining = requestsToFull(I, f), c = I, reads = 0, compactReads = 0, summaries = 0, writes = 0, n = 0;
+  while (remaining > 0) {
+    const steps = T === null ? remaining : c >= T ? 0 : Math.ceil((T - c) / f.g);
+    const take = Math.min(steps, remaining);
+    reads += take * c + f.g * take * (take - 1) / 2;
+    remaining -= take;
+    if (remaining > 0) {
+      const at = c + take * f.g, l = left(at, I, f);
+      compactReads += at; summaries += l.summary; writes += l.write; n += 1; c = l.after;
+    }
+  }
+  return { reads, compactReads, summaries, writes, n };
+};
+// A price that changes with the size of the input (Haiku) is walked request by request.
+const rates = (p, f) => ({ read: p.read, input: p.input, out: p.out, write5m: p.write5m * f.five, write1h: p.write1h * (1 - f.five) });
+const noParts = () => ({ read: 0, write1h: 0, write5m: 0, input: 0, output: 0 });
+const partsTotal = (p) => p.read + p.write1h + p.write5m + p.input + p.output;
+const walked = (T, I, f, p) => {
+  const at = (c) => rates(p.over && c > p.over ? p.above : p, f);
+  const parts = { ...noParts(), write1h: at(I).write1h * I, write5m: at(I).write5m * I };
+  let c = I;
+  for (let i = 0, h = requestsToFull(I, f); i < h; i++) {
+    if (T !== null && c >= T) { const l = left(c, I, f); parts.read += at(c).read * c; parts.output += at(c).out * l.summary; parts.write1h += at(l.after).write1h * l.write; parts.write5m += at(l.after).write5m * l.write; c = l.after; }
+    parts.read += at(c).read * c; parts.write1h += at(c).write1h * (f.g - f.uncached); parts.write5m += at(c).write5m * (f.g - f.uncached); parts.input += at(c).input * f.uncached; parts.output += at(c).out * f.o;
+    c += f.g;
+  }
+  return parts;
+};
+// What the work costs under trigger T, by what is paid for.
+const partsOf = (T, I, f) => {
+  const r = plan(T, I, f), h = requestsToFull(I, f), total = noParts();
+  for (const { p, w } of f.models) {
+    const rate = rates(p, f);
+    const parts = p.over ? walked(T, I, f, p) : {
+      read: rate.read * (r.reads + r.compactReads),
+      write1h: rate.write1h * (I + h * (f.g - f.uncached) + r.writes),
+      write5m: rate.write5m * (I + h * (f.g - f.uncached) + r.writes),
+      input: rate.input * h * f.uncached,
+      output: rate.out * (h * f.o + r.summaries),
+    };
+    for (const key of Object.keys(total)) total[key] += w * parts[key] / M;
+  }
+  return total;
+};
+const costOf = (T, I, f) => partsTotal(partsOf(T, I, f));
+const firstTrigger = (I, f) => {
+  const rest = Math.max(f.after + I - f.initialBase - f.summary, 0);
+  const lowest = f.model === 'ratio' ? Math.max((rest + f.g - I / f.ratio) / (1 - 1 / f.ratio), I + f.g) : rest + f.summary + f.g;
+  return Math.ceil(lowest / 1000) * 1000;
+};
+const lastTrigger = () => D.full - D.buffer;
+const curve = (I, f) => {
+  const pts = [];
+  for (let T = firstTrigger(I, f); T <= lastTrigger(); T += 1000) pts.push({ T, c: costOf(T, I, f) });
+  return pts;
+};
+const bestOf = (pts) => pts.reduce((b, p) => (p.c < b.c ? p : b), pts[0]);
+const windowOf = (T) => Math.min(1000000, Math.max(100000, T + D.buffer));
+const clampT = (T, I, f) => Math.max(firstTrigger(I, f), Math.min(lastTrigger(), T));
+
+function tipFor(host) {
+  const tip = document.createElement('div');
+  tip.className = 'tip'; tip.hidden = true; host.appendChild(tip);
+  return {
+    show(e, lines) {
+      tip.replaceChildren(...lines.map((t) => { const d = document.createElement('div'); d.textContent = t; return d; }));
+      tip.hidden = false;
+      const r = host.getBoundingClientRect();
+      tip.style.left = `${Math.max(0, Math.min(e.clientX - r.left + 12, r.width - tip.offsetWidth - 4))}px`;
+      tip.style.top = `${Math.max(0, e.clientY - r.top - tip.offsetHeight - 10)}px`;
+    },
+    hide() { tip.hidden = true; },
+  };
+}
+// The mark nearest the pointer, so small marks need no aiming.
+function nearest(host, svg, W, marks, lines, reach = 28) {
+  const tip = tipFor(host);
+  svg.addEventListener('pointermove', (e) => {
+    const r = svg.getBoundingClientRect(), s = W / r.width, px = (e.clientX - r.left) * s, py = (e.clientY - r.top) * s;
+    let best = null, dist = reach * reach;
+    for (const m of marks) { const d = (m.x - px) ** 2 + (m.y - py) ** 2; if (d < dist) { dist = d; best = m; } }
+    if (best) tip.show(e, lines(best)); else tip.hide();
+  });
+  svg.addEventListener('pointerleave', () => tip.hide());
+}
+const empty = (host, text) => { const d = document.createElement('div'); d.className = 'empty'; d.textContent = text; host.replaceChildren(d); };
+const logTicks = (lo, hi) => { const out = []; for (let e = Math.floor(Math.log10(lo)); e <= Math.ceil(Math.log10(hi)); e++) for (const m of [1, 2, 5]) { const v = m * 10 ** e; if (v >= lo && v <= hi) out.push(v); } return out; };
+
+function setFilters() {
+  const here = requests.some((r) => r.here) || comps.some((c) => c.here);
+  const fill = (id, items, get, set, startsOver = true) => {
+    const host = $(id);
+    host.replaceChildren(...items.map(({ value, label, disabled }) => {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = label; b.disabled = !!disabled;
+      b.setAttribute('aria-pressed', String(get() === value));
+      b.addEventListener('click', () => { set(value); if (startsOver) { state.followI = true; state.followWindow = true; } refresh(); });
+      return b;
+    }));
+  };
+  fill('fScope', [{ value: 'all', label: zhEn('全部專案', 'All projects') }, { value: 'here', label: zhEn(`當前專案：${D.hereName}`, `This project: ${D.hereName}`), disabled: !here }], () => state.scope, (v) => { state.scope = v; });
+  fill('fLang', [{ value: 'zh', label: '繁體中文' }, { value: 'en', label: 'English' }], () => (zh ? 'zh' : 'en'), (v) => { chooseLanguage(v); reword(); }, false);
+}
+
+const day = (ts) => new Date(ts * 1000).toISOString().slice(0, 10);
+function fillTable(id, headers, rows, none) {
+  const t = $(id);
+  t.replaceChildren();
+  if (!rows.length) { const cell = t.createTBody().insertRow().insertCell(); cell.textContent = none; cell.className = 'none'; return; }
+  const head = t.createTHead().insertRow();
+  headers.forEach((h) => { const th = document.createElement('th'); th.textContent = h; head.appendChild(th); });
+  const body = t.createTBody();
+  rows.forEach((cells) => { const tr = body.insertRow(); cells.forEach((v) => { tr.insertCell().textContent = v; }); });
+}
+
+function tile(label, value, sub, lead) {
+  const t = document.createElement('div');
+  t.className = lead ? 'tile lead' : 'tile';
+  for (const [cls, text] of [['label', label], ['value', value], ['sub', sub]]) {
+    if (text == null) continue;
+    const d = document.createElement('div'); d.className = cls; d.textContent = text; t.appendChild(d);
+  }
+  return t;
+}
+
+function drawTiles(f) {
+  const pure = pureRatios(f.shown);
+  const full = f.shown.filter((c) => c.after > 0).map((c) => c.pre / c.after);
+  const overhead = f.shown.filter((c) => c.after != null).map((c) => c.after - c.post);
+  const count = (fn) => f.shown.filter(fn).length;
+  const subs = count((c) => c.scope === 'subagent');
+  $('tilesCompact').replaceChildren(
+    tile(zhEn('壓縮次數', 'Compactions'), String(f.shown.length), zhEn(`手動 ${count((c) => c.kind === 'manual')} · 門檻 ${count((c) => c.kind === 'threshold')} · 閒置 ${count((c) => c.kind === 'idle')}${subs ? ` · 含 subagent ${subs}` : ''}`, `Manual ${count((c) => c.kind === 'manual')} · threshold ${count((c) => c.kind === 'threshold')} · idle ${count((c) => c.kind === 'idle')}${subs ? ` · subagent ${subs} included` : ''}`)),
+    tile(zhEn('壓縮前（中位）', 'Before (median)'), k(median(f.shown.map((c) => c.pre))), zhEn(`preTokens，不含 initial ${k(median(f.shown.map((c) => c.compacted)))}`, `preTokens; ${k(median(f.shown.map((c) => c.compacted)))} without initial`)),
+    tile(zhEn('壓縮後大小 · 常態', 'Size after · normal'), k(f.how.size?.normal ?? null), f.how.size ? zhEn(`不含 initial，${k(f.how.size.low)}–${k(f.how.size.high)}${f.how.size.dropped.length ? `，排除 ${f.how.size.dropped.length} 次` : ''}`, `Without initial, ${k(f.how.size.low)}–${k(f.how.size.high)}${f.how.size.dropped.length ? `, ${f.how.size.dropped.length} excluded` : ''}`) : null),
+    tile(zhEn('下一輪實際 context（中位）', 'Next context sent (median)'), k(median(f.shown.filter((c) => c.after != null).map((c) => c.after))), zhEn('含 initial context 送出', 'Sent with the initial context')),
+    tile(zhEn('固定開銷（中位）', 'Fixed overhead (median)'), k(median(overhead)), zhEn('壓縮後重新帶回的量', 'What comes back after compacting')),
+    tile(zhEn('壓縮比 · 常態', 'Ratio · normal'), x1(f.how.ratio?.normal ?? null), f.how.ratio ? zhEn(`不含 initial，${x1(f.how.ratio.low)}–${x1(f.how.ratio.high)}${f.how.ratio.dropped.length ? `，排除 ${f.how.ratio.dropped.length} 次` : ''}`, `Without initial, ${x1(f.how.ratio.low)}–${x1(f.how.ratio.high)}${f.how.ratio.dropped.length ? `, ${f.how.ratio.dropped.length} excluded` : ''}`) : null),
+    tile(zhEn('壓縮試算', 'Compaction estimate'), compressionValue(f), compressionSub(f)),
+    tile(zhEn('壓縮比 · 含 initial（中位）', 'Ratio · with initial (median)'), x1(median(full)), zhEn('算進重新帶回的 initial', 'Counting the initial that comes back')),
+  );
+  const g0 = f.normal.map((r) => r.g), all = [...f.normal, ...f.firsts], g1 = all.map((r) => r.g);
+  const o0 = f.normal.map((r) => r.o), o1 = all.map((r) => r.o);
+  const ratio = (rows) => geo(rows.filter((r) => r.o > 0 && r.g > 0).map((r) => r.g / r.o));
+  const sum = (a) => a.reduce((s, v) => s + v, 0);
+  $('tilesUsage').replaceChildren(
+    tile(zhEn('請求數', 'Requests'), String(f.normal.length), zhEn(`${new Set(f.inWindow.map((r) => r.session)).size} 個 session，不含壓縮${f.request.dropped.length ? `，常態值排除 ${f.request.dropped.length} 筆` : ''}`, `${new Set(f.inWindow.map((r) => r.session)).size} sessions, no compaction${f.request.dropped.length ? `, ${f.request.dropped.length} out of the normal value` : ''}`)),
+    tile(zhEn('常態 Input', 'Normal input'), k(f.request.g), zhEn(`每次請求，去除 initial；平均 ${k(mean(g0))}`, `Per request, without initial; mean ${k(mean(g0))}`)),
+    tile(zhEn('常態 Output', 'Normal output'), k(f.request.o), zhEn(`每次請求；平均 ${k(mean(o0))}`, `Per request; mean ${k(mean(o0))}`)),
+    tile(zhEn('常態 In/Out', 'Normal in/out'), f.request.g && f.request.o ? x1(f.request.g / f.request.o) : '—', zhEn(`每新增 1 個 input 約 ${f.request.g && f.request.o ? (f.request.o / f.request.g).toFixed(2) : '—'} 個 output`, `About ${f.request.g && f.request.o ? (f.request.o / f.request.g).toFixed(2) : '—'} output per input token`)),
+    tile(zhEn('Input · 含 initial', 'Input · with initial'), k(geo(g1)), zhEn(`平均 ${k(mean(g1))}`, `Mean ${k(mean(g1))}`)),
+    tile(zhEn('In/Out · 含 initial', 'In/Out · with initial'), x1(ratio(all)), sum(o1) ? zhEn(`總和相除 ${x1(sum(g1) / sum(o1))}`, `Of the totals ${x1(sum(g1) / sum(o1))}`) : null),
+    tile(zhEn('Initial context（中位）', 'Initial context (median)'), k(median(f.firsts.map((r) => r.ctx))), zhEn(`最近 5 個 session ${k(f.initialNow)}`, `Latest 5 sessions ${k(f.initialNow)}`)),
+  );
+}
+
+function drawEach(host, f, stat, value, format, name) {
+  const rows = f.shown.filter((c) => c.compacted > 0 && value(c) > 0).sort((a, b) => a.ts - b.ts);
+  if (!rows.length || !stat) { empty(host, zhEn('這個篩選沒有壓縮紀錄。', 'No compactions in this selection.')); return; }
+  const W = host.clientWidth || 500, H = 280, L = 48, R = 12, T = 14, B = 26;
+  const values = [...rows.map(value), stat.low, stat.high];
+  const lo = Math.min(...values) * 0.85, hi = Math.max(...values) * 1.15;
+  const x = (i) => L + (rows.length === 1 ? 0.5 : i / (rows.length - 1)) * (W - L - R);
+  const y = (v) => T + (1 - Math.log(v / lo) / Math.log(hi / lo)) * (H - T - B);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${zhEn(`每次壓縮的${name}與常態值`, `${name} of each compaction and the normal value`)}">`;
+  const ticks = Array.from({ length: 5 }, (_, i) => lo * (hi / lo) ** (i / 4));
+  ticks.forEach((v) => { s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" style="stroke:var(--grid)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${format(v)}</text>`; });
+  s += `<rect x="${L}" y="${y(stat.high)}" width="${W - L - R}" height="${y(stat.low) - y(stat.high)}" style="fill:var(--tint)"/>`;
+  s += `<line x1="${L}" x2="${W - R}" y1="${y(stat.normal)}" y2="${y(stat.normal)}" stroke-width="2" style="stroke:var(--fg)"/>`;
+  s += `<text class="strong" x="${W - R - 4}" y="${y(stat.normal) - 6}" text-anchor="end" style="paint-order:stroke;stroke:var(--panel);stroke-width:4px">${zhEn('常態', 'Normal')} ${format(stat.normal)}</text>`;
+  s += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle">${zhEn('由舊到新（對數刻度）', 'Oldest to newest (log scale)')}</text>`;
+  const out = new Set(stat.dropped), marks = [];
+  rows.forEach((c, i) => {
+    const px = x(i), py = y(value(c));
+    if (out.has(c)) s += `<path d="M${px - 4} ${py - 4} L${px + 4} ${py + 4} M${px + 4} ${py - 4} L${px - 4} ${py + 4}" stroke-width="2" style="stroke:var(--muted)"/>`;
+    else s += `<circle cx="${px}" cy="${py}" r="4.5" stroke-width="1"${c.scope === 'subagent' ? ' fill-opacity=".4"' : ''} style="fill:var(--s1);stroke:var(--panel)"/>`;
+    marks.push({ x: px, y: py, c });
+  });
+  host.innerHTML = `${s}</svg>`;
+  nearest(host, host.querySelector('svg'), W, marks, ({ c }) => [`${new Date(c.ts * 1000).toISOString().slice(0, 10)} · ${KIND[c.kind]} · ${c.scope === 'subagent' ? 'subagent' : zhEn('主 session', 'main session')}${out.has(c) ? zhEn(' · 已排除', ' · excluded') : ''}`, `${name} ${format(value(c))}`, zhEn(`不含 initial：${k(c.compacted)} → 摘要 ${k(c.post)}`, `Without initial: ${k(c.compacted)} → summary ${k(c.post)}`)]);
+}
+
+function drawDroppedCompactions(f) {
+  const { ratio, size } = f.how;
+  const rows = [];
+  (ratio?.dropped ?? []).forEach((c) => rows.push({ c, what: zhEn('常態壓縮比', 'Normal ratio'), value: x1(c.compacted / c.post), normal: x1(ratio.normal), how: `|z| ${Math.abs(ratio.zOf(c)).toFixed(1)}` }));
+  (size?.dropped ?? []).forEach((c) => rows.push({ c, what: zhEn('常態壓縮後大小', 'Normal size after'), value: k(c.post), normal: k(size.normal), how: `|z| ${Math.abs(size.zOf(c)).toFixed(1)}` }));
+  for (const [key, name] of [['post', zhEn('回歸線：摘要', 'Regression: summary')], ['after', zhEn('回歸線：實際送出', 'Regression: sent')]]) {
+    const line = fitOf(f.shown, key);
+    (line?.dropped ?? []).forEach((p) => rows.push({ c: p.c, what: name, value: k(p.y), normal: k(line.a + line.b * p.x), how: `|t| ${Math.abs(line.tOf(p)).toFixed(1)}` }));
+  }
+  fillTable('droppedCompactions', [zhEn('日期', 'Date'), zhEn('類型', 'Kind'), zhEn('用在', 'Used in'), zhEn('值', 'Value'), zhEn('常態或回歸預估', 'Normal or fitted'), zhEn('偏離', 'Off by')],
+    rows.sort((a, b) => b.c.ts - a.c.ts).map(({ c, what, value, normal, how }) => [day(c.ts), KIND[c.kind], what, value, normal, how]), zhEn('沒有被排除的壓縮。', 'No compaction excluded.'));
+  $('droppedCompactionsTitle').textContent = zhEn(`被排除的壓縮（${new Set(rows.map((r) => r.c)).size} 次）`, `Excluded compactions (${new Set(rows.map((r) => r.c)).size})`);
+}
+
+function drawHow(f) {
+  const { ratio, size, model } = f.how;
+  drawDroppedCompactions(f);
+  drawEach($('eachRatio'), f, ratio, (c) => c.compacted / c.post, (v) => x1(v), zhEn('壓縮比', 'Ratio'));
+  drawEach($('eachSize'), f, size, (c) => c.post, (v) => k(v), zhEn('壓縮後大小', 'Size after'));
+  if (!ratio || !size) { $('howVerdict').textContent = zhEn('還沒有壓縮紀錄，無法試算。', 'No compactions yet, so nothing to estimate from.'); $('howNote').textContent = zhEn(`⚠ 沒有壓縮紀錄，少於統計上可用的 ${D.enough} 次。`, `⚠ No compactions, under the ${D.enough} a normal value needs.`); return; }
+  $('howVerdict').textContent = model === 'ratio' ? zhEn(`壓縮試算用壓縮比 ${x1(ratio.normal)}。`, `The estimate uses a ratio of ${x1(ratio.normal)}.`) : zhEn(`壓縮試算用壓縮後大小 ${k(size.normal)}。`, `The estimate uses a size after compaction of ${k(size.normal)}.`);
+  const short = ratio.n < 3 ? zhEn('次數少於 3，先用壓縮後大小。', 'Under 3 compactions, so the size after compaction for now.') : model === 'fixed' && ratio.sd >= 0.9 * size.sd && ratio.sd <= size.sd ? zhEn('兩者差異太接近，看不出壓縮比比較穩定，所以用壓縮後大小。', 'Too close to call the ratio steadier, so the size after compaction.') : '';
+  const from = f.basisFrom === 'all' ? zhEn('這個篩選沒有壓縮，常態值用全部紀錄。', 'No compactions in this selection, so the normal values come from all records.') : '';
+  $('howNote').textContent = zhEn(`先算每次的值（主 session 和 subagent 都算），取 log 後算平均和標準差，再換算回來。標準差沒有單位，可以直接比誰比較穩定：壓縮比 ${ratio.sd.toFixed(2)}（用 ${ratio.n} 次，排除 ${ratio.dropped.length} 次），壓縮後大小 ${size.sd.toFixed(2)}（用 ${size.n} 次，排除 ${size.dropped.length} 次），越小越穩定。${short}${from}${f.tooFew ? ` ⚠ 只有 ${f.count} 次壓縮，少於統計上可用的 ${D.enough} 次，這裡的常態值僅供參考。` : ''}`, `Each compaction gets its own value (main sessions and subagents alike); the mean and standard deviation are taken in log space and converted back. A log deviation has no unit, so the two compare directly: ratio ${ratio.sd.toFixed(2)} (${ratio.n} used, ${ratio.dropped.length} excluded), size after ${size.sd.toFixed(2)} (${size.n} used, ${size.dropped.length} excluded); smaller is steadier. ${short}${from}${f.tooFew ? ` ⚠ Only ${compactions(f.count)}, under the ${D.enough} a normal value needs, so these are for reference.` : ''}`);
+}
+
+// A model without its own price is priced by the one of its name, and said so.
+function priceWarnings(rows) {
+  const counts = new Map();
+  rows.forEach((r) => { if (r.id !== D.prices[r.model]?.id) counts.set(r.id, (counts.get(r.id) ?? 0) + 1); });
+  return [...counts].map(([id, n]) => {
+    const family = requests.find((r) => r.id === id).model, same = D.prices[family];
+    return same ? zhEn(`${id}（${n} 次請求）沒有對應的價格，以 ${same.name} 估算。`, `${id} (${n} requests) has no price of its own: estimated at ${same.name}.`) : zhEn(`${id}（${n} 次請求）沒有價格，不計入成本。`, `${id} (${n} requests) has no price: left out of the cost.`);
+  });
+}
+
+const shareOf = (r) => zhEn(`近 1 天佔 ${(r.weight * 100).toFixed(0)}%`, `last day ${(r.weight * 100).toFixed(0)}%`);
+const recentNote = (f) => zhEn(`近 1 天佔 ${(f.recent.g.weight * 100).toFixed(0)}% / ${(f.recent.o.weight * 100).toFixed(0)}%`, `last day ${(f.recent.g.weight * 100).toFixed(0)}% / ${(f.recent.o.weight * 100).toFixed(0)}%`);
+
+const CLEARLY = 5; // Percent. The cost steps with the compaction count, so a smaller gap can be that step alone.
+const FLOOR = 200000; // A setting is not advised below this: the cost does not price what a compaction loses.
+const whyNoCost = (f) => (!f.normal.length ? zhEn('這個篩選沒有請求紀錄', 'No requests in this selection') : !f.models ? zhEn('這個模型沒有價格資料', 'This model has no price') : !f.count ? zhEn('還沒有壓縮紀錄', 'No compactions yet') : zhEn('資料不足', 'Not enough data'));
+const hasNumber = (sel) => D.current.window != null || D.current.pct != null || (sel.model === 'all' ? Object.keys(D.current.models ?? {}).length > 0 : D.current.models?.[sel.model] != null);
+
+// The lowest cost, raised to the floor when a change is on the table: not for a user told only to keep watching.
+function suggested(I, f) {
+  const T = bestOf(curve(I, f)).T, lowest = windowOf(T);
+  const floored = lowest < FLOOR && !D.current.isOff && (!f.tooFew || hasNumber(f.sel));
+  const fire = floored ? clampT(FLOOR - D.buffer, I, f) : T;
+  return { fire, window: windowOf(fire), lowest, floored };
+}
+const floorNote = (r) => zhEn(`試算建議 ${k(r.lowest)} < ${k(FLOOR)}，因此建議 ${k(FLOOR)}`, `Estimate ${k(r.lowest)} < ${k(FLOOR)}, so ${k(FLOOR)} is recommended`);
+
+// What the hero says: off comes first, then what the samples can carry and whether a number is set.
+function advice(f) {
+  if (D.current.isOff) return { label: zhEn('建議', 'Recommended'), value: zhEn('先啟用', 'Enable it'), verdict: zhEn('目前 auto compact 是關閉的，建議先啟用，累積紀錄後再回來調整設定值。', 'Auto-compact is off. Enable it first, then come back to tune the setting once there are records.') };
+  if (!f.canPrice) return { label: zhEn('建議的 autoCompactWindow', 'Recommended autoCompactWindow'), value: '—', verdict: f.count || !f.normal.length || !f.models ? zhEn(`${whyNoCost(f)}，無法給建議。`, `${whyNoCost(f)}, so no recommendation.`) : zhEn('還沒有壓縮紀錄，沒有實測值可以試算，建議繼續觀察。', 'No compactions yet, so nothing measured to estimate from. Keep watching.') };
+  const I = f.initialNow, fire = f.recommended.fire, value = k(f.recommended.window);
+  const more = (costOf(clampT(currentFire(), I, f), I, f) / costOf(fire, I, f) - 1) * 100;
+  if (!f.tooFew) return { label: zhEn('建議的 autoCompactWindow', 'Recommended autoCompactWindow'), value, verdict: more >= 0.5 ? zhEn(`比目前設定省 ${((1 - 100 / (100 + more)) * 100).toFixed(0)}%。`, `${((1 - 100 / (100 + more)) * 100).toFixed(0)}% cheaper than the setting in force.`) : zhEn('和目前設定差不多。', 'About the same as the setting in force.') };
+  const label = f.recommended.floored ? zhEn('建議的 autoCompactWindow', 'Recommended autoCompactWindow') : zhEn('試算的 autoCompactWindow', 'Estimated autoCompactWindow'), few = zhEn(`壓縮只有 ${f.count} 次`, `Only ${compactions(f.count)}`);
+  if (!hasNumber(f.sel)) return { label, value, verdict: zhEn(`${few}，建議繼續觀察，先不用改。`, `${few}: keep watching, no change needed.`) };
+  return more >= CLEARLY
+    ? { label, value, verdict: zhEn(`目前設定比試算貴 ${more.toFixed(0)}%。${few}，可以改用 ${value}，或什麼都不動，繼續觀察。`, `The setting in force costs ${more.toFixed(0)}% more than the estimate. ${few}: you can switch to ${value}, or change nothing and keep watching.`) }
+    : { label, value, verdict: zhEn(`目前設定和試算差不到 ${CLEARLY}%。${few}，什麼都不用動，繼續觀察。`, `The setting in force is within ${CLEARLY}% of the estimate. ${few}: change nothing and keep watching.`) };
+}
+
+function drawHero(f) {
+  const said = advice(f);
+  $('heroLabel').textContent = said.label;
+  $('heroValue').textContent = said.value;
+  $('heroVerdict').textContent = said.verdict;
+  const floored = f.canPrice && !D.current.isOff && f.recommended.floored;
+  $('heroFloor').hidden = !floored;
+  if (floored) $('heroFloor').textContent = floorNote(f.recommended);
+  if (!f.canPrice) {
+    $('heroTiles').replaceChildren();
+  } else {
+    const I = f.initialNow, fire = f.recommended.fire, nowAt = D.current.isOff ? null : clampT(currentFire(), I, f);
+    const cost = costOf(fire, I, f), nowCost = costOf(nowAt, I, f);
+    const reached = f.peaks.filter((p) => p >= fire).length;
+    $('heroTiles').replaceChildren(
+      tile(zhEn('目前設定', 'In force'), D.current.isOff ? zhEn('關閉', 'Off') : D.current.pct ? `${D.current.pct}%` : k(currentFire() + D.buffer), zhEn(`${usd(nowCost)}，壓 ${plan(nowAt, I, f).n} 次`, `${usd(nowCost)}, ${compactions(plan(nowAt, I, f).n)}`)),
+      tile(zhEn('建議值的累積成本', 'Cost at the recommendation'), usd(cost), zhEn(`跑滿 1M 的 ${requestsToFull(I, f)} 次請求，壓 ${plan(fire, I, f).n} 次`, `${requestsToFull(I, f)} requests to fill 1M, ${compactions(plan(fire, I, f).n)}`)),
+      tile(zhEn('加權後的一次請求', 'Weighted request'), `${k(f.g)} / ${k(f.o)}`, zhEn(`Input / Output，${recentNote(f)}`, `Input / Output, ${recentNote(f)}`)),
+      tile(zhEn('壓縮試算', 'Compaction estimate'), compressionValue(f), compressionSub(f)),
+      tile(zhEn('會觸發的 session', 'Sessions it reaches'), `${reached} / ${f.peaks.length}`, zhEn('近 30 天，其餘的成本不受影響', 'Last 30 days; the others cost the same')),
+    );
+  }
+  const keys = ['opus', 'sonnet', 'fable', 'haiku'].filter((m) => requests.some((r) => r.model === m));
+  const rows = keys.map((m) => {
+    const one = figures({ scope: state.scope, model: m });
+    if (!one.normal.length) return null;
+    if (!one.canPrice) return { m, cells: [LABEL[m], '—', '—', '—', '—', String(one.normal.length), whyNoCost(one)] };
+    const I = one.initialNow, at = one.recommended.fire, nowAt = D.current.isOff ? null : clampT(currentFire(m), I, one);
+    const cost = costOf(at, I, one), nowCost = costOf(nowAt, I, one);
+    const flags = [];
+    if (one.normal.length < 30) flags.push(zhEn('請求太少', 'Few requests'));
+    if (one.recommended.floored) flags.push(floorNote(one.recommended));
+    if (one.tooFew) flags.push(zhEn(`壓縮 ${one.count} 次，僅供參考`, `${compactions(one.count)}, for reference`));
+    else if (one.basisFrom === 'all') flags.push(zhEn('壓縮數值非此模型', 'Compaction figures from other models'));
+    return { m, cells: [LABEL[m], k(one.recommended.window), String(plan(at, I, one).n), usd(cost), `${((1 - cost / nowCost) * 100).toFixed(0)}%`, String(one.normal.length), flags.join(zhEn('、', ', ')) || '—'] };
+  }).filter(Boolean);
+  fillTable('heroModels', [zhEn('模型', 'Model'), 'autoCompactWindow', zhEn('壓縮次數', 'Compactions'), zhEn('累積成本', 'Cost'), zhEn('比目前省', 'Saved'), zhEn('請求數', 'Requests'), zhEn('注意', 'Notes')], rows.map((r) => r.cells), zhEn('近 30 天沒有請求。', 'No requests in the last 30 days.'));
+  $('heroNote').textContent = (D.current.isOff ? zhEn('啟用後可以參考這些數字。', 'For once it is enabled. ') : '') + zhEn('每個模型用自己的用量和價格計算，可以設在 modelSettings.<model>.autoCompactWindow。寫進設定時單位是 token，要補回 000。建議值會偏向近 1 天：當天專案越多、日子之間差異越大，近 1 天佔比越高，上限 50%。', 'Each model uses its own usage and prices, and can be set in modelSettings.<model>.autoCompactWindow. The setting takes tokens, so add the 000 back. The recommendation leans toward the last day: the more projects that day and the more days differ, the more it counts, 50% at most.');
+}
+
+const compressionValue = (f, I = state.I ?? f.initialNow) => (f.model === 'ratio' ? x1(f.ratio) : k(f.summary));
+const compressionSub = (f) => (f.tooFew ? zhEn(`壓縮只有 ${f.count} 次，僅供參考`, `Only ${compactions(f.count)}, for reference`) : f.how.ratio && f.how.size ? zhEn(`${f.model === 'ratio' ? '壓縮比' : '壓縮後大小'}較穩定（差異：壓縮比 ${f.how.ratio.sd.toFixed(2)}，大小 ${f.how.size.sd.toFixed(2)}）`, `${f.model === 'ratio' ? 'Ratio' : 'Size after'} is steadier (deviation: ratio ${f.how.ratio.sd.toFixed(2)}, size ${f.how.size.sd.toFixed(2)})`) : zhEn('壓縮紀錄不足', 'Not enough compactions'));
+
+function drawCompress(f) {
+  const host = $('compress');
+  const series = [
+    { key: 'after', name: zhEn('壓縮後實際送出', 'sent after compaction'), color: 'var(--s2)', note: 'fitNoteSent' },
+    { key: 'post', name: zhEn('摘要', 'summary'), color: 'var(--s1)', note: 'fitNote' },
+  ].map((one) => ({ ...one, line: fitOf(f.shown, one.key), points: f.shown.filter((c) => c[one.key] != null && c.compacted > 0) }));
+  series.forEach(({ note }) => { $(note).textContent = ''; });
+  if (!f.shown.length) { empty(host, zhEn('這個篩選沒有壓縮紀錄。', 'No compactions in this selection.')); return; }
+  const W = host.clientWidth || 800, H = W < 520 ? 320 : 400, L = 48, R = 16, T = 16, B = 40;
+  const right = Math.max(...f.shown.map((c) => c.compacted)) * 1.08;
+  const x = (v) => L + v / right * (W - L - R);
+  const top = Math.max(...f.shown.map((c) => c.after ?? c.post)) * 1.2;
+  const y = (v) => T + (1 - v / top) * (H - T - B);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${zhEn('每次壓縮不含 initial 的壓縮前大小、摘要與壓縮後實際送出的大小，以及各自的線性回歸', 'Size before each compaction without initial, its summary and what is sent after, with their regressions')}"><defs><clipPath id="cClip"><rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}"/></clipPath></defs>`;
+  for (let i = 0; i <= 5; i++) { const v = top * i / 5; s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" style="stroke:var(--grid)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v ? k(v) : '0'}</text>`; }
+  const gridStep = [50000, 100000, 200000, 250000, 500000].find((g) => right / g <= (W < 520 ? 4 : 8)) ?? 1000000;
+  for (let v = 0; v <= right; v += gridStep) s += `<line x1="${x(v)}" x2="${x(v)}" y1="${T}" y2="${H - B}" style="stroke:var(--grid)"/><text x="${x(v)}" y="${H - B + 16}" text-anchor="middle">${v ? k(v) : '0'}</text>`;
+  s += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle">${zhEn('壓縮前（不含 initial）', 'Before compaction (without initial)')}</text>`;
+  // What links one compaction's two points is the initial context it sent again.
+  f.shown.filter((c) => c.after != null && c.compacted > 0).forEach((c) => { s += `<line x1="${x(c.compacted)}" x2="${x(c.compacted)}" y1="${y(c.post)}" y2="${y(c.after)}" stroke-dasharray="2 3" style="stroke:var(--muted)"/>`; });
+  for (const { line, color } of series) {
+    if (!line) continue;
+    const from = Math.min(...line.kept.map((p) => p.x)), to = Math.max(...line.kept.map((p) => p.x));
+    const at = (v) => line.a + line.b * v;
+    s += `<line x1="${x(from)}" y1="${y(at(from))}" x2="${x(to)}" y2="${y(at(to))}" stroke-width="2" stroke-linecap="round" clip-path="url(#cClip)" style="stroke:${color}"/>`;
+    s += `<circle cx="${x(line.mx)}" cy="${y(line.my)}" r="4" stroke-width="2" style="fill:var(--panel);stroke:${color}"/>`;
+  }
+  const marks = [];
+  for (const { key, name, color, line, points } of series) {
+    const out = new Set((line?.dropped ?? []).map((p) => p.c));
+    points.forEach((c) => {
+      const px = x(c.compacted), py = y(c[key]), fade = c.scope === 'subagent' ? ' fill-opacity=".4"' : '';
+      if (out.has(c)) s += `<path d="M${px - 4} ${py - 4} L${px + 4} ${py + 4} M${px + 4} ${py - 4} L${px - 4} ${py + 4}" stroke-width="2" style="stroke:var(--muted)"/>`;
+      else if (c.kind === 'manual') s += `<circle cx="${px}" cy="${py}" r="4.5" fill="none" stroke-width="2" style="stroke:${color}"/>`;
+      else if (c.kind === 'threshold') s += `<path d="M${px} ${py - 6} L${px + 6} ${py} L${px} ${py + 6} L${px - 6} ${py} Z" stroke-width="1"${fade} style="fill:${color};stroke:var(--panel)"/>`;
+      else s += `<circle cx="${px}" cy="${py}" r="5" stroke-width="1"${fade} style="fill:${color};stroke:var(--panel)"/>`;
+      marks.push({ x: px, y: py, c, name, dropped: out.has(c) });
+    });
+  }
+  host.innerHTML = `${s}</svg>`;
+  nearest(host, host.querySelector('svg'), W, marks, ({ c, name, dropped }) => [
+    `${new Date(c.ts * 1000).toISOString().slice(0, 10)} · ${KIND[c.kind]} · ${c.scope === 'subagent' ? 'subagent' : zhEn('主 session', 'main session')} · ${LABEL[c.model] ?? c.model}`,
+    `${name}${dropped ? zhEn('（此回歸已排除）', ' (excluded from this regression)') : ''}`,
+    zhEn(`不含 initial：${k(c.compacted)} → 摘要 ${k(c.post)}（${x1(c.compacted / c.post)}）`, `Without initial: ${k(c.compacted)} → summary ${k(c.post)} (${x1(c.compacted / c.post)})`),
+    c.after != null ? zhEn(`含 initial：${k(c.pre)} → 實際送出 ${k(c.after)}（${x1(c.pre / c.after)}）`, `With initial: ${k(c.pre)} → sent ${k(c.after)} (${x1(c.pre / c.after)})`) : zhEn('之後沒有再送出請求', 'No request sent after it'),
+  ]);
+  for (const { line, name, note } of series) {
+    if (!line) { $(note).textContent = zhEn(`${name}：至少要 2 次壓縮才能做回歸。`, `${name}: a regression takes at least 2 compactions.`); continue; }
+    const eq = zhEn(`回歸線（${name}）`, `Regression (${name})`);
+    const quality = line.r2 == null ? '' : zhEn(`，R² = ${line.r2.toFixed(2)}`, `, R² = ${line.r2.toFixed(2)}`);
+    const band = line.low == null ? '' : zhEn(`，斜率 95% 信賴區間 ${line.low.toFixed(3)} 到 ${line.high.toFixed(3)}`, `, slope 95% CI ${line.low.toFixed(3)} to ${line.high.toFixed(3)}`);
+    const reading = line.low == null ? zhEn('次數太少，無法估計信賴區間。', 'Too few to estimate an interval.')
+      : line.low <= 0 && line.high >= 0 ? zhEn('區間包含 0：看不出它會隨壓縮前變大。', 'The interval holds 0: no sign it grows with the size before.')
+      : zhEn('區間不包含 0：它會隨壓縮前變化。', 'The interval leaves out 0: it moves with the size before.');
+    $(note).textContent = zhEn(`${eq}${quality}${band}，用 ${line.n} 次，排除 ${line.dropped.length} 次。${reading}`, `${eq}${quality}${band}, ${line.n} used, ${line.dropped.length} excluded. ${reading}`);
+  }
+}
+
+function drawKinds(f) {
+  const t = $('kinds');
+  t.replaceChildren();
+  const head = t.createTHead().insertRow();
+  for (const h of [zhEn('類型', 'Kind'), zhEn('次數', 'Count'), zhEn('壓縮前（中位）', 'Before (median)'), zhEn('摘要（中位）', 'Summary (median)'), zhEn('下一輪 context（中位）', 'Next context (median)'), zhEn('不含 initial（中位）', 'Without initial (median)'), zhEn('範圍', 'Range'), zhEn('含 initial（中位）', 'With initial (median)'), zhEn('範圍', 'Range')]) { const th = document.createElement('th'); th.textContent = h; head.appendChild(th); }
+  const body = t.createTBody();
+  const row = (label, list) => {
+    const pure = pureRatios(list), full = list.filter((c) => c.after > 0).map((c) => c.pre / c.after);
+    const tr = body.insertRow();
+    for (const v of [label, String(list.length), k(median(list.map((c) => c.pre))), k(median(list.map((c) => c.post))), k(median(list.filter((c) => c.after != null).map((c) => c.after))), x1(median(pure)), fmtRange(pure), x1(median(full)), fmtRange(full)]) tr.insertCell().textContent = v;
+  };
+  for (const kind of ['manual', 'threshold', 'idle']) row(KIND[kind], f.shown.filter((c) => c.scope === 'main' && c.kind === kind));
+  row('subagent', f.shown.filter((c) => c.scope === 'subagent'));
+}
+
+function drawInOut(f) {
+  const host = $('inout');
+  const all = [...f.normal, ...f.firsts].filter((r) => r.g > 0 && r.o > 0);
+  if (!all.length) { empty(host, zhEn('這個篩選沒有請求紀錄。', 'No requests in this selection.')); fillTable('droppedRequests', [], [], zhEn('沒有被排除的請求。', 'No request excluded.')); $('droppedRequestsTitle').textContent = zhEn('被排除的請求', 'Excluded requests'); $('inoutNote').textContent = ''; return; }
+  const MAX = 4000, stride = Math.max(1, Math.ceil(f.normal.length / MAX));
+  const fit = inOutLine(f.normal);
+  const reasons = new Map();
+  const why = (r, text) => reasons.set(r, [...(reasons.get(r) ?? []), text]);
+  f.request.dropped.forEach(({ r, zg, zo }) => why(r, zhEn(`常態值 |z| ${Math.max(Math.abs(zg), Math.abs(zo)).toFixed(1)}`, `Normal value |z| ${Math.max(Math.abs(zg), Math.abs(zo)).toFixed(1)}`)));
+  (fit?.dropped ?? []).forEach(({ r, t }) => why(r, zhEn(`回歸線 |t| ${Math.abs(t).toFixed(1)}`, `Regression |t| ${Math.abs(t).toFixed(1)}`)));
+  const shown = [...f.normal.filter((r, i) => r.g > 0 && r.o > 0 && (i % stride === 0 || reasons.has(r))), ...f.firsts.filter((r) => r.g > 0 && r.o > 0)];
+  $('inoutNote').textContent = !fit ? zhEn('至少要 3 次請求才能做回歸。', 'A regression takes at least 3 requests.') : zhEn(`回歸線：R² = ${fit.r2.toFixed(2)}，斜率 95% 信賴區間 ${fit.low.toFixed(2)} 到 ${fit.high.toFixed(2)}，用 ${fit.n} 次，排除 ${fit.dropped.length} 次。${fit.low > 1 || fit.high < 1 ? '斜率不是 1，所以 in/out 比會隨 input 大小改變。' : '斜率可能是 1，in/out 比不隨 input 大小改變。'}`, `Regression: R² = ${fit.r2.toFixed(2)}, slope 95% CI ${fit.low.toFixed(2)} to ${fit.high.toFixed(2)}, ${fit.n} used, ${fit.dropped.length} excluded. ${fit.low > 1 || fit.high < 1 ? 'The slope is not 1, so the in/out ratio moves with the size of the input.' : 'The slope may be 1, so the in/out ratio need not move with the size of the input.'}`);
+  $('sampled').hidden = stride === 1;
+  $('sampled').textContent = zhEn(`圖上每 ${stride} 個一般請求畫 1 個，數字仍以全部請求計算。`, `One in ${stride} normal requests is drawn; the figures use them all.`);
+  const W = host.clientWidth || 500, H = 340, L = 48, R = 14, T = 12, B = 40;
+  const xLo = Math.max(1, Math.min(...all.map((r) => r.g)) * 0.8), xHi = Math.max(...all.map((r) => r.g)) * 1.2;
+  const yLo = Math.max(1, Math.min(...all.map((r) => r.o)) * 0.8), yHi = Math.max(...all.map((r) => r.o)) * 1.2;
+  const x = (v) => L + Math.log(v / xLo) / Math.log(xHi / xLo) * (W - L - R);
+  const y = (v) => T + (1 - Math.log(v / yLo) / Math.log(yHi / yLo)) * (H - T - B);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${zhEn('每次請求的 input 與 output', 'Input and output of each request')}"><defs><clipPath id="ioClip"><rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}"/></clipPath></defs>`;
+  logTicks(yLo, yHi).filter((v) => /^[15]/.test(String(v))).forEach((v) => { s += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" style="stroke:var(--grid)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${k(v)}</text>`; });
+  logTicks(xLo, xHi).filter((v) => /^[15]/.test(String(v))).forEach((v) => { s += `<line x1="${x(v)}" x2="${x(v)}" y1="${T}" y2="${H - B}" style="stroke:var(--grid)"/><text x="${x(v)}" y="${H - B + 16}" text-anchor="middle">${k(v)}</text>`; });
+  s += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle">${zhEn('Input（每次請求）', 'Input (per request)')}</text><text x="${L + 4}" y="${T + 12}" class="strong">Output</text>`;
+  const marks = [];
+  const dots = (list, color, r) => list.forEach((d) => { const px = x(d.g), py = y(d.o); s += `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="${r}" fill-opacity=".45" style="fill:${color}"/>`; marks.push({ x: px, y: py, d }); });
+  dots(shown.filter((d) => !d.first && !reasons.has(d)), 'var(--s1)', 2.5);
+  dots(shown.filter((d) => d.first), 'var(--s2)', 3.5);
+  shown.filter((d) => reasons.has(d)).forEach((d) => { const px = x(d.g), py = y(d.o); s += `<path d="M${(px - 3).toFixed(1)} ${(py - 3).toFixed(1)} L${(px + 3).toFixed(1)} ${(py + 3).toFixed(1)} M${(px + 3).toFixed(1)} ${(py - 3).toFixed(1)} L${(px - 3).toFixed(1)} ${(py + 3).toFixed(1)}" stroke-width="1.5" style="stroke:var(--muted)"/>`; marks.push({ x: px, y: py, d }); });
+  const line = fit;
+  if (line) {
+    const from = Math.exp(Math.min(...line.kept.map((p) => p.x))), to = Math.exp(Math.max(...line.kept.map((p) => p.x)));
+    const at = (v) => Math.exp(line.a + line.b * Math.log(v));
+    s += `<line x1="${x(from)}" y1="${y(at(from))}" x2="${x(to)}" y2="${y(at(to))}" stroke-width="2" stroke-linecap="round" clip-path="url(#ioClip)" style="stroke:var(--s2)"/>`;
+  }
+  if (f.request.g && f.request.o) {
+    const { g: normalIn, o: normalOut } = f.request;
+    s += `<line x1="${x(normalIn)}" x2="${x(normalIn)}" y1="${T}" y2="${H - B}" stroke-width="1.5" style="stroke:var(--fg)"/><line x1="${L}" x2="${W - R}" y1="${y(normalOut)}" y2="${y(normalOut)}" stroke-width="1.5" style="stroke:var(--fg)"/>`;
+    s += `<text class="strong" x="${x(normalIn) + 6}" y="${y(normalOut) - 6}" style="paint-order:stroke;stroke:var(--panel);stroke-width:4px">${zhEn('常態', 'Normal')} in ${k(normalIn)} / out ${k(normalOut)}</text>`;
+  }
+  host.innerHTML = `${s}</svg>`;
+  nearest(host, host.querySelector('svg'), W, marks, ({ d }) => [d.first ? zhEn('session 第一個請求（initial）', 'First request of a session (initial)') : zhEn('一般請求', 'Normal request'), `Input ${k(d.g)}`, `Output ${k(d.o)}`, zhEn(`In/Out 比 ${x1(d.g / d.o)}`, `In/Out ${x1(d.g / d.o)}`), ...(reasons.has(d) ? [zhEn(`已排除：${reasons.get(d).join('、')}`, `Excluded: ${reasons.get(d).join(', ')}`)] : [])], 16);
+  fillTable('droppedRequests', [zhEn('日期', 'Date'), 'Input', 'Output', zhEn('In/Out 比', 'In/Out'), zhEn('排除原因', 'Why')],
+    [...reasons].sort(([a], [b]) => b.ts - a.ts).map(([r, texts]) => [day(r.ts), k(r.g), k(r.o), x1(r.g / r.o), texts.join(zhEn('、', ', '))]), zhEn('沒有被排除的請求。', 'No request excluded.'));
+  $('droppedRequestsTitle').textContent = zhEn(`被排除的請求（${reasons.size} 次）`, `Excluded requests (${reasons.size})`);
+}
+
+// A model set apart in modelSettings fires where that says.
+const currentFire = (m) => D.current.models?.[m] ?? D.current.fire;
+const describeCurrent = () => (D.current.isOff ? zhEn('關閉', 'Off') : D.current.pct ? `${D.current.pct}%` : k(currentFire() + D.buffer));
+$('initial').addEventListener('input', (e) => { state.I = +e.target.value; state.followI = false; drawCalc(); });
+$('setting').addEventListener('input', (e) => { state.window = +e.target.value; state.isOff = false; state.followWindow = false; state.growView = 'pick'; drawCalc(); });
+$('initialReset').addEventListener('click', () => { state.followI = true; state.I = current.initialNow; $('initial').value = state.I; drawCalc(); });
+$('toRecommended').addEventListener('click', () => { state.followWindow = true; state.isOff = false; state.growView = 'best'; state.window = suggested(state.I, current).window; $('setting').value = state.window; drawCalc(); });
+$('toCurrent').addEventListener('click', () => { state.followWindow = false; state.isOff = D.current.isOff; state.growView = 'now'; if (!D.current.isOff) { state.window = windowOf(currentFire()); $('setting').value = state.window; } drawCalc(); });
+$('toOff').addEventListener('click', () => { state.followWindow = false; state.isOff = !state.isOff; state.growView = 'pick'; drawCalc(); });
+
+const shares = (p) => { const all = partsTotal(p); return PARTS.map(([key, name]) => `${name} ${usd(p[key])}（${(p[key] / all * 100).toFixed(1)}%）`); };
+
+function drawCost(f, pts, best, pickT, nowT) {
+  const host = $('cost'), W = host.clientWidth || 800, H = 340, L = 60, R = 16, T0 = 28, B = 42;
+  const I = state.I, off = costOf(null, I, f), nowCost = D.current.isOff ? off : costOf(nowT, I, f);
+  const x = (win) => L + (win - 100000) / 900000 * (W - L - R);
+  const top = Math.max(off, nowCost) * 1.12, floor = best.c * 0.9;
+  const y = (c) => T0 + (1 - (c - floor) / (top - floor)) * (H - T0 - B);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${zhEn('各設定值跑到 context 累積滿 1M 的總成本', 'Total cost for the context to reach 1M, by setting')}"><defs><clipPath id="plot"><rect x="${L}" y="${T0}" width="${W - L - R}" height="${H - T0 - B}"/></clipPath></defs>`;
+  for (let i = 0; i <= 4; i++) { const c = floor + (top - floor) * i / 4; s += `<line x1="${L}" x2="${W - R}" y1="${y(c)}" y2="${y(c)}" style="stroke:var(--grid)"/><text x="${L - 8}" y="${y(c) + 4}" text-anchor="end">${usd(c)}</text>`; }
+  const tick = W < 520 ? 300000 : 100000;
+  for (let w = 100000; w <= 1000000; w += tick) s += `<text x="${x(w)}" y="${H - B + 18}" text-anchor="middle">${k(w)}</text>`;
+  s += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle">autoCompactWindow</text>`;
+  s += `<line x1="${L}" x2="${W - R}" y1="${y(off)}" y2="${y(off)}" stroke-dasharray="6 4" style="stroke:var(--muted)"/><text x="${(L + W - R) / 2}" y="${y(off) - 6}" text-anchor="middle">${zhEn('關閉', 'Off')} ${usd(off)}</text>`;
+  s += `<path d="${pts.map((p, i) => `${i ? 'L' : 'M'}${x(windowOf(p.T)).toFixed(1)},${y(p.c).toFixed(1)}`).join('')}" fill="none" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" clip-path="url(#plot)" style="stroke:var(--fg)"/>`;
+  const mark = (t, label, dashed, dy) => {
+    const px = x(windowOf(t)), py = y(costOf(t, I, f));
+    const anchor = px > W - 110 ? 'end' : px < L + 90 ? 'start' : 'middle';
+    return `<line x1="${px}" x2="${px}" y1="${T0}" y2="${H - B}" ${dashed ? 'stroke-dasharray="3 4"' : ''} style="stroke:var(--fg)"/><circle cx="${px}" cy="${py}" r="5" stroke-width="2" style="fill:${dashed ? 'var(--panel)' : 'var(--fg)'};stroke:${dashed ? 'var(--fg)' : 'var(--panel)'}"/><text class="strong" x="${px}" y="${T0 - 10 + dy}" text-anchor="${anchor}">${label}</text>`;
+  };
+  if (!D.current.isOff) s += mark(nowT, zhEn('目前', 'In force'), false, 0);
+  if (!state.isOff) s += mark(pickT, zhEn('你選的', 'Your pick'), true, Math.abs(windowOf(pickT) - windowOf(nowT)) < 90000 ? 14 : 0);
+  s += `<circle cx="${x(windowOf(best.T))}" cy="${y(best.c)}" r="5" stroke-width="2" style="fill:var(--fg);stroke:var(--panel)"/><text class="strong" x="${x(windowOf(best.T))}" y="${y(best.c) - 12}" text-anchor="middle" style="paint-order:stroke;stroke:var(--panel);stroke-width:4px">${zhEn('最省', 'Lowest')} ${k(windowOf(best.T))}</text>`;
+  s += `<line id="costX" y1="${T0}" y2="${H - B}" style="display:none;stroke:var(--muted)"/><rect id="costHit" x="${L}" y="${T0}" width="${W - L - R}" height="${H - T0 - B}" fill="transparent"/></svg>`;
+  host.innerHTML = s;
+  const tip = tipFor(host), hair = $('costX'), svg = host.querySelector('svg');
+  $('costHit').addEventListener('pointermove', (e) => {
+    const r = svg.getBoundingClientRect(), px = (e.clientX - r.left) / r.width * W;
+    const win = Math.round((100000 + (px - L) / (W - L - R) * 900000) / 1000) * 1000;
+    const t = clampT(win - D.buffer, I, f), parts = partsOf(t, I, f), c = partsTotal(parts);
+    hair.setAttribute('x1', px); hair.setAttribute('x2', px); hair.style.display = '';
+    tip.show(e, [`autoCompactWindow ${k(win)}`, zhEn(`總成本 ${usd(c)}，壓 ${plan(t, I, f).n} 次，比最省的貴 ${((c / best.c - 1) * 100).toFixed(1)}%`, `Total ${usd(c)}, ${compactions(plan(t, I, f).n)}, ${((c / best.c - 1) * 100).toFixed(1)}% over the lowest`), ...shares(parts)]);
+  });
+  $('costHit').addEventListener('pointerleave', () => { tip.hide(); hair.style.display = 'none'; });
+}
+
+function run(T, I, H, f) {
+  const pts = [], marks = [];
+  let c = I;
+  for (let i = 0; i < H; i++) {
+    if (T !== null && c >= T) { const { after } = left(c, I, f); marks.push({ i, c: after }); pts.push({ i, c }); c = after; }
+    pts.push({ i, c });
+    c += f.g;
+  }
+  return { pts, marks };
+}
+
+// The same work request by request: what has been paid so far, by what it was paid for.
+function cumulative(T, I, f) {
+  const at = (p, c) => rates(p.over && c > p.over ? p.above : p, f);
+  const total = noParts(), steps = [];
+  const pay = (key, tokens, rateOf) => { for (const { p, w } of f.models) total[key] += w * tokens * rateOf(p) / M; };
+  let c = I;
+  const write = (tokens, c0) => { pay('write1h', tokens, (p) => at(p, c0).write1h); pay('write5m', tokens, (p) => at(p, c0).write5m); };
+  write(I, I);
+  for (let i = 0, h = requestsToFull(I, f); i < h; i++) {
+    if (T !== null && c >= T) {
+      const l = left(c, I, f), was = c;
+      pay('read', was, (p) => at(p, was).read); pay('output', l.summary, (p) => at(p, was).out); write(l.write, l.after);
+      c = l.after;
+    }
+    const now = c;
+    pay('read', now, (p) => at(p, now).read); write(f.g - f.uncached, now); pay('input', f.uncached, (p) => at(p, now).input); pay('output', f.o, (p) => at(p, now).out);
+    steps.push({ i, ...total });
+    c += f.g;
+  }
+  return steps;
+}
+
+function drawGrowth(f, pickT, nowT, bestT) {
+  const host = $('growth'), W = host.clientWidth || 800, H = W < 520 ? 340 : 420, L = 52, R = 60, T0 = 26, B = 42;
+  const I = state.I, N = requestsToFull(I, f);
+  const triggers = { best: bestT, now: D.current.isOff ? null : nowT, pick: state.isOff ? null : pickT };
+  const names = { best: zhEn('建議值', 'Recommended'), now: zhEn('目前設定', 'In force'), pick: zhEn('你選的', 'Your pick') };
+  const paidOf = { best: cumulative(triggers.best, I, f), now: cumulative(triggers.now, I, f), pick: cumulative(triggers.pick, I, f) };
+  const sum = partsTotal;
+  // Each bar is one stretch of requests: what a request cost there on average, so a compaction shows in the stretch it fell in.
+  const bins = Math.min(N, W < 520 ? 16 : 40), band = (W - L - R) / bins;
+  const edge = (b) => Math.ceil(b * N / bins);
+  const perRequest = (list, b) => {
+    const from = edge(b), to = edge(b + 1), end = list[to - 1], start = from > 0 ? list[from - 1] : noParts(), n = to - from;
+    return Object.fromEntries(PARTS.map(([key]) => [key, (end[key] - start[key]) / n]));
+  };
+  const barsOf = (list) => Array.from({ length: bins }, (_, b) => perRequest(list, b));
+  // The scale holds across the three, so switching compares them.
+  const top = Math.max(...Object.values(paidOf).flatMap((list) => barsOf(list).map(sum))) * 1.12;
+  const paid = paidOf[state.growView], bars = barsOf(paid);
+  const paths = { best: run(triggers.best, I, N, f), now: run(triggers.now, I, N, f), pick: run(triggers.pick, I, N, f) };
+  const path = paths[state.growView];
+  const total = (list) => sum(list[list.length - 1]);
+  // Its own line pattern tells each apart, here and on the card.
+  const dashes = { best: '', now: '8 5', pick: '2 5' };
+  $('growView').replaceChildren(...Object.keys(names).map((view) => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'viewcard';
+    b.setAttribute('aria-pressed', String(state.growView === view));
+    b.addEventListener('click', () => { state.growView = view; drawCalc(); });
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    line.setAttribute('viewBox', '0 0 28 8');
+    line.innerHTML = `<path d="M1 4 H27" fill="none" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="${dashes[view]}" style="stroke:var(--fg)"/>`;
+    const name = document.createElement('span'); name.className = 'viewname'; name.append(line, names[view]);
+    const cost = document.createElement('span'); cost.className = 'viewcost'; cost.textContent = usd(total(paidOf[view]));
+    const sub = document.createElement('span'); sub.className = 'viewsub'; sub.textContent = zhEn(`累積成本，壓 ${paths[view].marks.length} 次`, `Total cost, ${compactions(paths[view].marks.length)}`);
+    b.append(name, cost, sub);
+    return b;
+  }));
+  const cents = (v) => `$${v.toFixed(top < 1 ? 3 : 2)}`;
+  const x = (i) => L + i / N * (W - L - R);
+  const yContext = (c) => T0 + (1 - c / 1000000) * (H - T0 - B);
+  const yCost = (c) => T0 + (1 - c / top) * (H - T0 - B);
+  let s = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${zhEn(`${names[state.growView]}的 context 隨請求次數的變化，以及每次請求成本的組成`, `${names[state.growView]}: the context by request, and what each request cost`)}">`;
+  [0, 250000, 500000, 750000, 1000000].forEach((c, i) => {
+    s += `<line x1="${L}" x2="${W - R}" y1="${yContext(c)}" y2="${yContext(c)}" style="stroke:var(--grid)"/><text x="${L - 8}" y="${yContext(c) + 4}" text-anchor="end">${c ? k(c) : '0'}</text>`;
+    s += `<text x="${W - R + 8}" y="${yContext(c) + 4}">${cents(top * i / 4)}</text>`;
+  });
+  s += `<text class="strong" x="${L}" y="${T0 - 12}" text-anchor="end">Context</text><text class="strong" x="${W - 2}" y="${T0 - 12}" text-anchor="end">${zhEn('每次請求成本', 'Cost per request')}</text>`;
+  for (const fr of [0, 0.25, 0.5, 0.75, 1]) { const i = Math.round(N * fr); s += `<text x="${x(i)}" y="${H - B + 18}" text-anchor="middle">${i}</text>`; }
+  s += `<text x="${(L + W - R) / 2}" y="${H - 6}" text-anchor="middle">${zhEn('第幾次請求', 'Request')}</text>`;
+  const barW = Math.max(2, band - 2);
+  bars.forEach((step, b) => {
+    let at = 0;
+    for (const [key, , color] of PARTS) {
+      const from = yCost(at), to = yCost(at + step[key]);
+      at += step[key];
+      if (from - to < 0.5) continue;
+      s += `<rect x="${L + band * b + 1}" y="${to}" width="${barW}" height="${Math.max(from - to - 1, 0.5)}" fill-opacity=".55" style="fill:${color}"/>`;
+    }
+  });
+  for (const view of Object.keys(names).sort((a) => (a === state.growView ? 1 : -1))) {
+    s += `<path d="${paths[view].pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.i).toFixed(1)},${yContext(p.c).toFixed(1)}`).join('')}" fill="none" stroke-width="${view === state.growView ? 2.5 : 1.5}" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="${dashes[view]}" style="stroke:var(--fg)"/>`;
+  }
+  for (const m of path.marks) s += `<circle cx="${x(m.i)}" cy="${yContext(m.c)}" r="4" stroke-width="2" style="fill:var(--fg);stroke:var(--panel)"/>`;
+  s += `<line id="growX" y1="${T0}" y2="${H - B}" style="display:none;stroke:var(--muted)"/><rect id="growHit" x="${L}" y="${T0}" width="${W - L - R}" height="${H - T0 - B}" fill="transparent"/></svg>`;
+  host.innerHTML = s;
+  host.dataset.end = total(paid).toFixed(4);
+  host.dataset.rebuilt = bars.reduce((all, p, b) => all + sum(p) * (edge(b + 1) - edge(b)), 0).toFixed(4);
+  const tip = tipFor(host), hair = $('growX'), svg = host.querySelector('svg');
+  const at = (r, i) => { const hit = r.pts.filter((p) => p.i === i); return hit.length ? k(hit[hit.length - 1].c) : '-'; };
+  const single = (i) => { const was = i > 0 ? paid[i - 1] : noParts(); return Object.fromEntries(PARTS.map(([key]) => [key, paid[i][key] - was[key]])); };
+  const money = (v) => `$${v.toFixed(v < 1 ? 3 : 2)}`;
+  $('growHit').addEventListener('pointermove', (e) => {
+    const b = svg.getBoundingClientRect(), px = (e.clientX - b.left) / b.width * W;
+    const i = Math.max(0, Math.min(N - 1, Math.round((px - L) / (W - L - R) * N)));
+    const one = single(i), bin = Math.min(bins - 1, Math.floor(i * bins / N));
+    hair.setAttribute('x1', x(i)); hair.setAttribute('x2', x(i)); hair.style.display = '';
+    tip.show(e, [zhEn(`第 ${i + 1} 次請求${path.marks.some((m) => m.i === i) ? '（這次壓縮）' : ''}`, `Request ${i + 1}${path.marks.some((m) => m.i === i) ? ' (compacts here)' : ''}`),
+      zhEn(`${names[state.growView]}：這次 ${money(sum(one))}，這段平均 ${money(sum(bars[bin]))}`, `${names[state.growView]}: this one ${money(sum(one))}, stretch average ${money(sum(bars[bin]))}`),
+      ...PARTS.map(([key, name]) => `${name} ${money(one[key])}`),
+      ...Object.keys(names).map((view) => zhEn(`${names[view]}：context ${at(paths[view], i)}，累積 ${usd(sum(paidOf[view][i]))}`, `${names[view]}: context ${at(paths[view], i)}, total ${usd(sum(paidOf[view][i]))}`))]);
+  });
+  $('growHit').addEventListener('pointerleave', () => { tip.hide(); hair.style.display = 'none'; });
+}
+
+const pickTOf = (f) => clampT(state.window - D.buffer, state.I, f);
+
+function drawCalc() {
+  const f = current;
+  $('calc').hidden = !f.canPrice;
+  $('noprice').hidden = f.canPrice;
+  if (!f.canPrice) { $('noprice').textContent = zhEn(`${whyNoCost(f)}，無法試算成本。`, `${whyNoCost(f)}, so no cost can be estimated.`); return; }
+  const I = state.I, pts = curve(I, f), best = bestOf(pts), off = costOf(null, I, f);
+  const used = (name, value, sub) => tile(name, value, sub);
+  $('tilesCalc').replaceChildren(
+    used(zhEn('試算的 Initial context', 'Initial context used'), k(I), state.followI ? zhEn('最近 5 個 session 的中位數', 'Median of the latest 5 sessions') : zhEn('手動調整', 'Adjusted by hand')),
+    used(zhEn('試算的 Input', 'Input used'), k(f.g), zhEn(`每次請求，其中未快取 ${k(f.uncached)}；${shareOf(f.recent.g)}`, `Per request, ${k(f.uncached)} uncached; ${shareOf(f.recent.g)}`)),
+    used(zhEn('試算的 Output', 'Output used'), k(f.o), zhEn(`每次請求；${shareOf(f.recent.o)}`, `Per request; ${shareOf(f.recent.o)}`)),
+    used(zhEn('Cache 寫入', 'Cache write'), ...(f.five > 0.5 ? [`5m ${(f.five * 100).toFixed(0)}%`, `1h ${((1 - f.five) * 100).toFixed(0)}%`] : [`1h ${((1 - f.five) * 100).toFixed(0)}%`, `5m ${(f.five * 100).toFixed(0)}%`])),
+    used(zhEn('壓縮試算', 'Compaction estimate'), compressionValue(f), zhEn(`實際送出約 ${k(left(pickTOf(f), I, f).after)}`, `About ${k(left(pickTOf(f), I, f).after)} sent`)),
+  );
+  const money = (v) => `$${(Number.isInteger(v) ? String(v) : v * 100 % 1 ? String(v) : v.toFixed(2))}`;
+  const priceRows = [];
+  for (const key of ['opus', 'sonnet', 'fable', 'haiku']) {
+    const p = D.prices[key], share = f.models.find((m) => m.name === key)?.w;
+    const shareText = share == null ? '—' : `${Math.round(share * 100)}%`;
+    priceRows.push([p.name + (p.over ? zhEn(`（≤ ${k(p.over)}）`, ` (≤ ${k(p.over)})`) : ''), money(p.input), money(p.read), money(p.write5m), money(p.write1h), money(p.out), shareText]);
+    if (p.above) priceRows.push([zhEn(`${p.name}（> ${k(p.over)}）`, `${p.name} (> ${k(p.over)})`), money(p.above.input), money(p.above.read), money(p.above.write5m), money(p.above.write1h), money(p.above.out), shareText]);
+  }
+  fillTable('prices', [zhEn('模型', 'Model'), 'Input', zhEn('Cache 讀取', 'Cache read'), zhEn('Cache 寫入 5m', 'Cache write 5m'), zhEn('Cache 寫入 1h', 'Cache write 1h'), 'Output', zhEn('試算佔比', 'Share in the estimate')], priceRows, '');
+  const reach = (t) => f.peaks.filter((p) => p >= t).length;
+  const nowOff = D.current.isOff, pickT = clampT(state.window - D.buffer, I, f), nowT = clampT(currentFire(), I, f);
+  const pickCost = state.isOff ? off : costOf(pickT, I, f), nowCost = nowOff ? off : costOf(nowT, I, f);
+  const pickPlan = plan(state.isOff ? null : pickT, I, f);
+  const split = (T) => { const p = partsOf(T, I, f), all = partsTotal(p); return PARTS.map(([key]) => `${(p[key] / all * 100).toFixed(key === 'input' ? 2 : key === 'write5m' ? 1 : 0)}%`); };
+
+  $('initialOut').textContent = k(I);
+  $('initialReset').textContent = zhEn(`回到目前的 ${k(f.initialNow)}`, `Back to the current ${k(f.initialNow)}`);
+  $('toCurrent').textContent = zhEn(`切到目前設定：${describeCurrent()}`, `Go to the setting in force: ${describeCurrent()}`);
+  $('settingOut').textContent = state.isOff ? zhEn('關閉', 'Off') : k(state.window);
+  $('setting').disabled = state.isOff;
+  $('toOff').setAttribute('aria-pressed', String(state.isOff));
+
+  const gap = (pickCost / nowCost - 1) * 100;
+  const verdict = $('verdict');
+  verdict.replaceChildren();
+  const add = (text, cls) => { const el = document.createElement('span'); el.textContent = text; if (cls) el.className = cls; verdict.appendChild(el); };
+  add(zhEn(`做完 context 累積滿 1M 的 ${requestsToFull(I, f)} 次請求，這個設定約 ${usd(pickCost)}，`, `For the ${requestsToFull(I, f)} requests that fill the context to 1M, this setting costs about ${usd(pickCost)}, `));
+  if (Math.abs(gap) < 0.5) add(zhEn('和目前設定差不多', 'about the same as the setting in force'));
+  else if (gap < 0) add(zhEn(`▼ 比目前設定省 ${(-gap).toFixed(0)}%`, `▼ ${(-gap).toFixed(0)}% cheaper than the setting in force`), 'good');
+  else add(zhEn(`▲ 比目前設定貴 ${gap.toFixed(0)}%`, `▲ ${gap.toFixed(0)}% more than the setting in force`), 'bad');
+  const toBest = (pickCost / best.c - 1) * 100;
+  add(toBest < 0.5 ? zhEn('，已是這個 initial context 下最省的。', ', the lowest at this initial context.') : zhEn(`，比最省的 ${k(windowOf(best.T))} 貴 ${toBest.toFixed(1)}%。`, `, ${toBest.toFixed(1)}% over the lowest, ${k(windowOf(best.T))}.`));
+
+  const low = !state.isOff && state.window - D.buffer < firstTrigger(I, f);
+  $('reach').textContent = low
+    ? zhEn(`這個設定低於壓縮後留下的 context，每次請求都會壓縮，這裡以能運作的最低設定 ${k(windowOf(pickT))} 計算。`, `This setting is below what a compaction leaves, so every request would compact. It is computed at the lowest that works, ${k(windowOf(pickT))}.`)
+    : state.isOff
+      ? zhEn('關閉時 context 累積滿 1M 之前都不會壓縮，之後要手動 /compact 才能繼續。', 'Off, the context never compacts before 1M, and then takes a manual /compact to go on.')
+      : zhEn(`這段工作會壓縮 ${pickPlan.n} 次。近 30 天的 ${f.peaks.length} 個 session 中，${reach(pickT)} 個會用到壓縮；其餘的成本不受影響。`, `This work compacts ${pickPlan.n === 1 ? 'once' : `${pickPlan.n} times`}. Of the ${f.peaks.length} sessions in the last 30 days, ${reach(pickT)} would compact; the others cost the same.`);
+
+  drawCost(f, pts, best, pickT, nowT);
+  drawGrowth(f, pickT, nowT, suggested(I, f).fire);
+
+  const t = $('table');
+  t.replaceChildren();
+  const head = t.createTHead().insertRow();
+  for (const h of ['', 'autoCompactWindow', zhEn('壓縮次數', 'Compactions'), zhEn('總成本', 'Total'), zhEn('比最省的貴', 'Over the lowest'), zhEn('Cache 讀取', 'Cache read'), zhEn('Cache 寫入 1h', 'Cache write 1h'), zhEn('Cache 寫入 5m', 'Cache write 5m'), 'Input', 'Output', zhEn('會觸發的 session', 'Sessions it reaches')]) { const th = document.createElement('th'); th.textContent = h; head.appendChild(th); }
+  const body = t.createTBody();
+  const row = (cells, picked) => { const tr = body.insertRow(); if (picked) tr.className = 'picked'; cells.forEach((v) => { tr.insertCell().textContent = v; }); };
+  row([zhEn('你選的', 'Your pick'), state.isOff ? zhEn('關閉', 'Off') : k(state.window), String(pickPlan.n), usd(pickCost), `${toBest.toFixed(1)}%`, ...split(state.isOff ? null : pickT), state.isOff ? '0' : String(reach(pickT))], true);
+  row([zhEn('最省', 'Lowest'), k(windowOf(best.T)), String(plan(best.T, I, f).n), usd(best.c), '0.0%', ...split(best.T), String(reach(best.T))]);
+  row([zhEn('目前設定', 'In force'), nowOff ? zhEn('關閉', 'Off') : D.current.pct ? `${D.current.pct}%` : k(currentFire() + D.buffer), String(plan(nowOff ? null : nowT, I, f).n), usd(nowCost), `${((nowCost / best.c - 1) * 100).toFixed(1)}%`, ...split(nowOff ? null : nowT), nowOff ? '0' : String(reach(currentFire()))]);
+  row([zhEn('關閉', 'Off'), zhEn('關閉', 'Off'), '0', usd(off), `${((off / best.c - 1) * 100).toFixed(1)}%`, ...split(null), '0']);
+
+  const fromWhere = f.tooFew ? zhEn('，壓縮紀錄不足', ', too few compactions') : { all: zhEn('，這個篩選沒有壓縮，壓縮數值用全部紀錄', ', no compactions in this selection, so figures from all records') }[f.basisFrom] ?? '';
+  $('basis').textContent = zhEn(`試算把常態的一次請求累加起來。壓縮試算用${f.model === 'ratio' ? `壓縮比 ${x1(f.ratio)}` : `壓縮後大小 ${k(f.summary)}，實際送出約 ${k(left(pickT, I, f).after)}`}${fromWhere}。${D.current.pct ? `目前的 ${D.current.pct}% 來自 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE，/context 不顯示百分比，無法確認是否生效。` : ''}`, `The estimate adds up the normal request. Compaction uses ${f.model === 'ratio' ? `a ratio of ${x1(f.ratio)}` : `a size after of ${k(f.summary)}, with about ${k(left(pickT, I, f).after)} sent`}${fromWhere}. ${D.current.pct ? `The ${D.current.pct}% in force comes from CLAUDE_AUTOCOMPACT_PCT_OVERRIDE; /context shows no percentage, so whether it takes effect is unconfirmed.` : ''}`);
+}
+
+let current;
+function refresh() {
+  setFilters();
+  current = figures({ scope: state.scope, model: 'all' });
+  const f = current;
+  if (f.canPrice) {
+    if (state.followI || state.I == null) { state.I = f.initialNow; $('initial').value = state.I; }
+    if (state.followWindow || state.window == null) { state.window = f.canPrice ? suggested(state.I, f).window : state.window; $('setting').value = state.window; }
+  }
+  const caution = [];
+  if (f.normal.length && f.normal.length < 30) caution.push(zhEn(`這個篩選只有 ${f.normal.length} 次請求，數字波動會很大。`, `Only ${f.normal.length} requests in this selection, so the figures can swing widely.`));
+  if (f.tooFew) caution.push(f.count ? zhEn(`⚠ 壓縮紀錄只有 ${f.count} 次，少於統計上可用的 ${D.enough} 次。試算用這些紀錄的實測值，數字僅供參考。`, `⚠ Only ${compactions(f.count)}, under the ${D.enough} a normal value needs. The estimate uses what they measured, for reference.`) : zhEn('⚠ 還沒有壓縮紀錄，沒有實測值可以試算。', '⚠ No compactions yet, so nothing measured to estimate from.'));
+  const warnings = priceWarnings(f.inWindow);
+  caution.push(...warnings.map((w) => `⚠ ${w}`));
+  $('priceWarnings').hidden = !warnings.length;
+  $('priceWarnings').textContent = warnings.map((w) => `⚠ ${w}`).join(' ');
+  $('caution').hidden = !caution.length;
+  $('caution').textContent = caution.join('');
+  drawAll();
+}
+function drawAll() {
+  const f = current;
+  drawHero(f); drawTiles(f); drawCompress(f); drawHow(f); drawKinds(f); drawInOut(f); drawCalc();
+}
+
+document.querySelectorAll('[data-color]').forEach((el) => { el.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--${el.dataset.color})`; });
+document.querySelectorAll('[data-color-box]').forEach((el) => { el.style.background = `var(--${el.dataset.colorBox})`; });
+document.querySelectorAll('[data-line]').forEach((el) => { el.style.borderTopColor = `var(--${el.dataset.line})`; });
+refresh();
+let lastWidth = $('app').clientWidth;
+const shell = $('app');
+new ResizeObserver(() => { const w = shell.clientWidth; if (w !== lastWidth) { lastWidth = w; drawAll(); } }).observe(shell);
+}
+
+// The page never changes: its figures come from report.json beside it, or from a file handed to it where a browser refuses that read.
+function askForFile(message) {
+  $('loaderText').textContent = message;
+  $('loaderHelp').hidden = false;
+  const input = $('loaderFile');
+  input.hidden = false;
+  const read = async (file) => {
+    if (!file) return;
+    try { accept(JSON.parse(await file.text())); }
+    catch { askForFile(zhEn('這個檔案不是 report.sh 產生的 report.json，請換一個。', 'This is not a report.json from report.sh. Choose another.')); }
+  };
+  input.onchange = () => read(input.files[0]);
+  const zone = $('dropzone');
+  zone.ondragover = (e) => e.preventDefault();
+  zone.ondrop = (e) => { e.preventDefault(); read(e.dataTransfer.files[0]); };
+}
+function accept(report) {
+  if (!report || !Array.isArray(report.requests) || !Array.isArray(report.compactions)) throw new Error('not a report');
+  start(report);
+}
+if (window.AUTOCOMPACT_REPORT) accept(window.AUTOCOMPACT_REPORT);
+else fetch('report.json', { cache: 'no-store' })
+  .then((r) => { if (!r.ok) throw new Error(String(r.status)); return r.json(); })
+  .then(accept)
+  .catch(() => askForFile(zhEn('找不到 report.json。', 'report.json not found.')));
+</script>
