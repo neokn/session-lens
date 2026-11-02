@@ -49,6 +49,7 @@ let toasts: string[] = []
 // What the auto-compact button started, and what its script answers.
 let reportRuns: string[][] = []
 let reportAnswer = { exitCode: 0, stderr: '' }
+let tuningAnswer = ''
 let kept: Record<string, unknown> = {}
 
 // One more turn after the workflow's, its prompt typed `n` hours in, answered with a line.
@@ -119,9 +120,10 @@ async function mountLens([$, on]: Parameters<TestBody>, run?: { status: string; 
     return { value: line({ agentType: 'workflow-subagent', description: `sweep:${a}`, workflowPhase: 'Sweep', spawnDepth: 1 }) }
   })
   on('process.run', (_, e) => {
-    if (e.argv[1]?.endsWith('/report.sh')) {
+    if (e.argv[1]?.endsWith('/report.sh') || e.argv[1]?.endsWith('/recommend.sh') || e.argv[1]?.endsWith('/apply.sh')) {
       reportRuns.push([...e.argv])
-      return { value: { ...reportAnswer, isStdoutTruncated: false, isStderrTruncated: false, stdout: '' } }
+      const stdout = e.argv[1].endsWith('/recommend.sh') ? tuningAnswer : e.argv[1].endsWith('/apply.sh') ? 'wrote it' : ''
+      return { value: { ...reportAnswer, isStdoutTruncated: false, isStderrTruncated: false, stdout } }
     }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('ln "')) {
       scripts.push([...e.argv])
@@ -286,7 +288,7 @@ test('the auto-compact report runs its script at the press, left of the session 
   expect(keys.indexOf('node-autocompact')).toBe(keys.indexOf('node-report') - 1)
   await press('autocompact')
   await clock.advance(1)
-  expect(reportRuns).toEqual([['bash', expect.stringMatching(/\/skills\/autocompact-tuning\/scripts\/report\.sh$/)]])
+  expect(reportRuns).toEqual([['bash', expect.stringMatching(/\/autocompact-tuning\/scripts\/report\.sh$/), '--no-summary']])
   expect(toasts.join()).toContain('opened in your browser')
   expect(ran).toEqual([])
   // It says why when the script stops short.
@@ -296,6 +298,41 @@ test('the auto-compact report runs its script at the press, left of the session 
   await clock.advance(1)
   expect(toasts.join()).toContain('jq not found')
   expect(toasts.join()).not.toContain('opened in your browser')
+  await ui.unmount()
+})
+
+// /autocompact-tuning opens the report and asks, with no turn of the model's; only the choice is written.
+test('/autocompact-tuning writes only what the dialog chose', async (...args) => {
+  const [$, on] = args
+  let answer = 'Global: 264K (Recommended)'
+  const asked: string[][] = []
+  on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
+    const q = e.questions[0]
+    asked.push(q?.options.map(o => o.label) ?? [])
+    return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
+  })
+  const ui = await mountLens(args)
+  const row = { model: '', id: null, compactions: 40, tooFew: false, window: 264000, lowest: 264000, floored: false, costsMore: 58, hasNumber: true }
+  tuningAnswer = line({ current: { isOff: false, pct: null }, overall: row, byModel: [{ ...row, model: 'opus', id: 'claude-opus-5-5', window: 267000 }] })
+  const tune = () => $.command.run({ command: 'autocompact-tuning', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const scripts = () => reportRuns.map(a => [a[1]?.split('/').pop(), ...a.slice(2)])
+  const written = await tune()
+  expect(scripts()).toEqual([['report.sh', '--no-summary'], ['recommend.sh', '--settings'], ['apply.sh', '--global', '264000']])
+  expect(asked[0]).toEqual(['Global: 264K (Recommended)', 'By model: Opus 267K', 'Change nothing'])
+  expect(written.text).toContain('wrote it')
+  expect(ran.filter(r => r.command !== 'autocompact-tuning')).toEqual([])
+  reportRuns = []
+  answer = 'By model: Opus 267K'
+  await tune()
+  expect(scripts().at(-1)).toEqual(['apply.sh', '--model', 'claude-opus-5-5=267000'])
+  // Change nothing, or free text under Other, writes nothing.
+  for (const other of ['Change nothing', 'something else']) {
+    reportRuns = []
+    answer = other
+    const left = await tune()
+    expect(scripts().some(a => a[0] === 'apply.sh')).toBe(false)
+    expect(left.text).toContain('Nothing was written')
+  }
   await ui.unmount()
 })
 

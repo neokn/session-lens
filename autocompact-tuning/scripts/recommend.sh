@@ -93,10 +93,11 @@ ROWS="$(mktemp)"
 trap 'rm -f "$ROWS"' EXIT
 {
   for f in ~/.claude/projects/$PROJ/*.jsonl; do
-    [ -f "$f" ] || continue
+    # A file untouched for over 30 days holds no request of the last 30.
+    [ -n "$(find "$f" -mtime -31 2>/dev/null)" ] || continue
     read_log "$f" main
   done
-  find ~/.claude/projects/$PROJ -type f -path '*/subagents/*' -name '*.jsonl' -exec grep -l '"compact_boundary"' {} + 2>/dev/null \
+  find ~/.claude/projects/$PROJ -type f -path '*/subagents/*' -name '*.jsonl' -mtime -31 -exec grep -l '"compact_boundary"' {} + 2>/dev/null \
     | while IFS= read -r f; do read_log "$f" subagent; done || true
 } > "$ROWS"
 
@@ -112,6 +113,7 @@ jq -sr --arg only "$1" --arg mode "$MODE" --argjson current "$CURRENT" --arg her
   def FULL: 1000000;     # what the context is compared at: the work it takes to fill this
 
   def mean: if length == 0 then null else add / length end;
+  def over($a; $b): if ($b // 0) == 0 then null else ($a // 0) / $b end;
   def median: if length == 0 then null else sort | if length % 2 == 1 then .[length / 2 | floor] else (.[length / 2 - 1] + .[length / 2]) / 2 end end;
   # Per-request tokens are close to log-normal, so their normal values are taken in log space.
   def logs: map(select(. > 0) | log);
@@ -151,7 +153,11 @@ jq -sr --arg only "$1" --arg mode "$MODE" --argjson current "$CURRENT" --arg her
         | .left -= $k
         | if .left > 0 then
             (.c + $k * $v.g) as $at | left($at; $v) as $l
-            | .compactReads += $at | .summaries += $l.summary | .writes += $l.write | .n += 1 | .c = $l.after
+            # Once a compaction leaves the context where this stretch began, every stretch to come is the same: take them at once.
+            | (if $k > 0 and $l.after == .c then ((.left - 1) / $k | floor) else 0 end) as $more
+            | .reads += $more * ($k * $l.after + $v.g * $k * ($k - 1) / 2)
+            | .left -= $more * $k
+            | .compactReads += (1 + $more) * $at | .summaries += (1 + $more) * $l.summary | .writes += (1 + $more) * $l.write | .n += 1 + $more | .c = $l.after
           else . end);
   def cost($p; $plan; $v): requests($v) as $h
     | ($p.write1h * (1 - $v.five) + $p.write5m * $v.five) as $write
@@ -295,7 +301,7 @@ jq -sr --arg only "$1" --arg mode "$MODE" --argjson current "$CURRENT" --arg her
       | "\($r.days)d · \($r.w | map(.file) | unique | length) sessions · \($count) requests · \($r.c | length) compactions",
         "  new input      with initial: mean \($r.g1 | mean | k) typical \($r.g1 | geo | k)   without initial: mean \($r.g0 | mean | k) typical \($r.g0 | geo | k)",
         "  context sent   with initial: mean \($r.ctx1 | mean | k) typical \($r.ctx1 | geo | k)   without initial: mean \($r.ctxNet | mean | k) typical \($r.ctxNet | geo | k)",
-        "  output         mean \($r.o0 | mean | k) typical \($r.o0 | geo | k)   input/output: mean \((($r.g0 | mean) // 0) / (($r.o0 | mean) // 1) | num) typical \((($r.g0 | geo) // 0) / (($r.o0 | geo) // 1) | num)",
+        "  output         mean \($r.o0 | mean | k) typical \($r.o0 | geo | k)   input/output: mean \(over(($r.g0 | mean); ($r.o0 | mean)) | num) typical \(over(($r.g0 | geo); ($r.o0 | geo)) | num)",
         "  initial        median \($r.firsts | map(.ctx) | median | k) over \($r.firsts | length) session starts",
         "  log skew       new input \($r.g0 | skewlog | num)   output \($r.o0 | skewlog | num)   (0 = normal in log space)",
         (["manual", "threshold", "idle"][] as $kind
@@ -304,11 +310,11 @@ jq -sr --arg only "$1" --arg mode "$MODE" --argjson current "$CURRENT" --arg her
         (($subComps | map(select(.ts >= $now - $r.days * 86400))) as $x
           | if ($x | length) == 0 then empty else "  subagent     n=\($x | length)  pure \($x | map(ratio_pure) | geo | x) (\($x | map(ratio_pure) | range_x))  with initial \($x | map(ratio_full) | geo | x) (\($x | map(ratio_full) | range_x))  summary \($x | map(.summary) | geo | k)  after \($x | map(select(.after != null) | .after) | geo | k)" end),
         (($r.g0 | length) as $n0
-          | if $n0 == 0 then "  no requests in this window" else
+          | if $n0 == 0 or ($r.gN // 0) <= 0 or ($r.oN // 0) <= 0 then "  no requests in this window" else
             {g: $r.gN, o: $r.oN, n: $r.n, i: $r.init, five: $r.five, uncached: ([$r.uncached, $r.gN] | min)} as $v
             | per($v; $r.share) as $near
             | per({g: $r.gRaw, o: $r.oRaw, n: $r.n, i: $r.init, five: $r.five, uncached: ([$r.uncached, $r.gRaw] | min)}; $r.share) as $raw
-            | "  normal request new input \($r.gN | k) output \($r.oN | k) input/output \($r.gN / $r.oN | num)   cache 5m \($r.five * 100 | round)%   summary \($r.n.summary | k) after \($r.n.after | k) cache write \($r.n.write | k)\(if ($r.every | length) < 3 then "   (compaction figures from 30d)" else "" end)",
+            | "  normal request new input \($r.gN | k) output \($r.oN | k) input/output \(over($r.gN; $r.oN) | num)   cache 5m \($r.five * 100 | round)%   summary \($r.n.summary | k) after \($r.n.after | k) cache write \($r.n.write | k)\(if ($r.every | length) < 3 then "   (compaction figures from 30d)" else "" end)",
               (if $r.n.count == 0 then "  no compactions  nothing measured to compute from" else empty end),
               (if $r.days == 30 then "  last day       input \($r.gRecent.today | k) at \($r.gRecent.weight * 100 | round)% of \($r.gPlain | k)   output \($r.oRecent.today | k) at \($r.oRecent.weight * 100 | round)% of \($r.oPlain | k)   (\($r.gRecent.units // 0) \($r.gRecent.by // "units") that day, 50% at most)" else empty end),
               (if $r.n.count == 0 then empty else "  each compaction  ratio \($r.n.how.ratio.normal | x) (log sd \($r.n.how.ratio.sd | num))  size \($r.n.how.size.normal | k) (log sd \($r.n.how.size.sd | num))  → \(if $r.n.model == "ratio" then "cost uses the ratio" else "cost uses the size" end)\(if $r.n.tooFew then ", only \($r.n.count), under \(ENOUGH): for reference" else "" end)" end),
@@ -344,12 +350,14 @@ jq -sr --arg only "$1" --arg mode "$MODE" --argjson current "$CURRENT" --arg her
 
     if ($reqs | length) == 0 then (if $mode == "text" then "no requests in the logs" else "null" end)
     elif $mode == "settings" then
-      report(30) as $a | for_now($a) as $f
+      report(30) as $a
+      | if ($a.gN // 0) <= 0 or ($a.oN // 0) <= 0 then {model: $only, id: ((PRICES[$only] // {}).id), requests: ($a.normal | length), compactions: $a.n.count, tooFew: $a.n.tooFew, window: null} | tojson else
+      for_now($a) as $f
       | (if $current.isOff then NEVER else ($current.models[$only] // $current.fire) end) as $nowT
       | advised($a; $f; $nowT) as $d
       | {model: $only, id: ((PRICES[$only] // {}).id), requests: ($a.normal | length), compactions: $a.n.count, tooFew: $a.n.tooFew,
          window: (if $a.n.count == 0 then null else window($d.fire) end), lowest: (if $a.n.count == 0 then null else $d.lowest end),
-         floored: $d.floored, costsMore: (if $current.isOff then null else ($d.more | round) end), hasNumber: $d.hasNumber} | tojson
+         floored: $d.floored, costsMore: (if $current.isOff then null else ($d.more | round) end), hasNumber: $d.hasNumber} | tojson end
     elif $mode == "json" then
       # Records, not names: the page filters and computes them, and learns of a project only a number and whether it is the current one.
       def is_here: project_of | . == $here_dir or startswith($here_dir + "--");
@@ -365,14 +373,14 @@ jq -sr --arg only "$1" --arg mode "$MODE" --argjson current "$CURRENT" --arg her
     else
       report(30) as $a | report(7) as $b | report(1) as $c
       | lines($a), "", lines($b), "", lines($c), "",
-        ($comps30 | map(select(.cycle != null and .after != null))) as $cy
+        ($comps30 | map(select(.cycle != null and .after != null and .after > 0))) as $cy
         | "does input/output move compression? (Spearman, \($cy | length) compactions in 30d)",
           "  input/output vs pure ratio \($cy | map(select(.summary > 0 and compacted > 0) | [.cycle, compacted / .summary]) | spearman | num)   vs ratio with initial \($cy | map([.cycle, .pre / .after]) | spearman | num)   context before vs pure ratio \($cy | map(select(.summary > 0 and compacted > 0) | [.pre, compacted / .summary]) | spearman | num)",
           "",
           ($reqs | map(select(.ts >= $now - 30 * 86400)) | price_warnings[] | "warning: \(.)"),
           (if $a.n.tooFew then "warning: only \($a.n.count) compactions, under \(ENOUGH): the figures are measured but for reference" else empty end),
           "in force: \(in_force)",
-          (for_now($a) as $f
+          (if ($a.gN // 0) <= 0 or ($a.oN // 0) <= 0 then "advice: no usable requests in the last 30 days, so nothing to compute from" else for_now($a) as $f
           | (if $current.isOff then NEVER else $current.fire end) as $nowT
           | "to fill 1M from an initial context of \($f.init | k): \(requests($f.v)) requests, off $\(mixed(plan(NEVER; $f.v); $f.v; $a.share) | num), in force $\(mixed(plan($nowT; $f.v); $f.v; $a.share) | num), lowest $\(mixed(plan($f.near.mix; $f.v); $f.v; $a.share) | num)",
             # Off comes first, then what the samples can carry and whether a number is set.
@@ -383,16 +391,22 @@ jq -sr --arg only "$1" --arg mode "$MODE" --argjson current "$CURRENT" --arg her
               elif ($a.n.tooFew | not) then "recommended: \($number)"
               elif ($hasNumber | not) then "estimated: \($number)\nadvice: only \($a.n.count) compactions: keep watching, no change needed"
               elif $more >= 5 then "estimated: \($number)\nadvice: in force costs \($more | round)% more, on only \($a.n.count) compactions: switch to it, or change nothing and keep watching"
-              else "estimated: \($number)\nadvice: in force is within 5%, on only \($a.n.count) compactions: change nothing, keep watching" end)
+              else "estimated: \($number)\nadvice: in force is within 5%, on only \($a.n.count) compactions: change nothing, keep watching" end end)
     end' "$ROWS"
 }
 
 if [ "$MODE" = settings ]; then
-  analyse "" > "$ROWS.all"
-  for m in opus sonnet fable; do analyse "$m"; done > "$ROWS.models"
+  # Only 30 days are asked for, each run reads the rows again, and they run side by side.
+  jq -c --argjson since "$(($(date +%s) - 30 * 86400))" 'select(.t != "r" or .k == "first" or .ts >= $since)' "$ROWS" > "$ROWS.recent"
+  mv "$ROWS.recent" "$ROWS"
+  analyse "" > "$ROWS.all" &
+  pids=($!)
+  for m in opus sonnet fable; do analyse "$m" > "$ROWS.$m" & pids+=($!); done
+  for pid in "${pids[@]}"; do wait "$pid"; done
+  cat "$ROWS.opus" "$ROWS.sonnet" "$ROWS.fable" > "$ROWS.models"
   jq -cn --argjson current "$CURRENT" --slurpfile all "$ROWS.all" --slurpfile models "$ROWS.models" \
     '{current: $current, overall: $all[0], byModel: ($models | map(select(. != null))), notCovered: ["haiku"]}'
-  rm -f "$ROWS.all" "$ROWS.models"
+  rm -f "$ROWS.all" "$ROWS.models" "$ROWS.opus" "$ROWS.sonnet" "$ROWS.fable"
 else
   analyse ""
 fi
