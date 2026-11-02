@@ -13,7 +13,7 @@ import { liveReqsOf } from './digest/turns'
 import { usesOf } from './digest/uses'
 import { bashEnded, bashStarted } from './record/children'
 import { readMainShape, readMcpInstructions, readPrompt, readRestart } from './record/transcript'
-import { autocompactReport, checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
+import { autocompactReport, autocompactTuning, checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
 import { ledgerKey, measuredOf } from './state'
 import { Fold } from './views/atoms/Fold'
 import { cut, fit, fmtTime, io, IO_W, k, K_W, left, money, prompt, shortModel, span, tinyModel, toolLabel, typeOf, waffle, width } from './views/layout'
@@ -154,8 +154,14 @@ export const register: Register = on => {
       name: 'session-lens',
       description: 'Open the session-lens pane (what fills the context, what got used)',
     })
+    await $.command.register({
+      name: 'autocompact-tuning',
+      description: 'Open the auto-compact report and offer to write the setting it comes to',
+    })
     return next(e)
   })
+
+  on('command.run', { command: 'autocompact-tuning' }, async $ => ({ text: await autocompactTuning($) }))
 
   on('command.run', { command: 'session-lens' }, async $ => {
     await followTheme($)
@@ -173,7 +179,7 @@ export const register: Register = on => {
 
   // Every slash command that runs, whoever provides it: the record has the names, this keeps who provided them.
   on('command.run', async ($, e, next) => {
-    if (e.command !== 'session-lens') {
+    if (e.command !== 'session-lens' && e.command !== 'autocompact-tuning') {
       let source = 'unknown'
       let plugin: string | undefined
       try {

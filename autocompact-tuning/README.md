@@ -1,61 +1,23 @@
----
-name: autocompact-tuning
-description: Use when someone wants a Claude Code auto-compact setting chosen or re-checked from their own usage — "auto compact 要設多少", "推薦 auto-compact 設定值", "幫我分析每次請求的 input/output", "壓縮比是多少", "what should I set /autocompact to", "is my CLAUDE_AUTOCOMPACT_PCT_OVERRIDE right", "compact 太早 / 太晚", or any question about where compaction becomes cheaper than letting the context grow. Also use when per-request token usage or compression ratios must be read from ~/.claude/projects jsonl logs.
-disable-model-invocation: true
----
-
 # autocompact-tuning
 
-A person starts this with `/session-lens:autocompact-tuning`; it stays out of the
-model's context until then. The scripts read the session logs and write the report
-with no model involved, and a person can run them directly or press
-`Auto-compact Report` in the session-lens pane. Run them, relay what they print, and
-do not recompute anything. What this adds to the button is the question at the end:
-whether to write the setting for them.
-
-The script path is under this skill's base directory:
+Says what `autoCompactWindow` fits a person's own usage. Nothing here takes a turn of the
+model's or any room in its context: the mod runs these scripts, and so can a person.
 
 ```bash
-bash <skill dir>/scripts/report.sh             # writes the data, opens the page, prints the setting
-bash <skill dir>/scripts/recommend.sh --settings  # what to set as JSON, overall and by model
-bash <skill dir>/scripts/recommend.sh          # the full report as text, 30, 7 and 1 days
-bash <skill dir>/scripts/apply.sh --help       # writes ~/.claude/settings.json, once asked
+bash autocompact-tuning/scripts/report.sh                # writes the data, opens the page, prints the setting
+bash autocompact-tuning/scripts/recommend.sh --settings  # what to set as JSON, overall and by model
+bash autocompact-tuning/scripts/recommend.sh             # the full report as text, 30, 7 and 1 days
+bash autocompact-tuning/scripts/apply.sh --help          # writes ~/.claude/settings.json
 ```
 
-## Steps
+In a session, `Auto-compact Report` at the foot of the pane runs the first. `/autocompact-tuning`
+runs it too, then asks in a dialog whether to write the setting, globally or by model, and
+runs `apply.sh` on the answer. `hooks/digest/autocompact.ts` holds what it says and offers.
 
-1. Run `report.sh`, which opens the page, then `recommend.sh --settings`. For a
-   question about the current project, add `--here` to the second.
-2. Reply with the printed lines in a code block, then what is in force, from the
-   `in force` line, and the advice under **What to tell the user**.
-3. Ask with AskUserQuestion whether to write the setting, unless there is nothing to
-   write (no compactions yet). Show values in K, as the report does.
-
-   | State | Options, the recommended one first |
-   |---|---|
-   | Off | Enable auto-compact · Change nothing |
-   | Under 30, no number set | Change nothing · Global · By model |
-   | Under 30, number set, `costsMore` 5 or above | Change nothing · Global · By model, none marked recommended: it is their choice |
-   | Under 30, number set, under 5 | Change nothing · Global · By model |
-   | 30 or more | Global · By model · Change nothing |
-
-   Global is `overall.window`. By model lists each of `byModel` with its `window`;
-   Haiku is not in it, as its price steps with the input, and the page's table has it.
-4. Run what they chose, and nothing when they choose to change nothing:
-
-   ```bash
-   bash <skill dir>/scripts/apply.sh --enable
-   bash <skill dir>/scripts/apply.sh --global <overall.window>
-   bash <skill dir>/scripts/apply.sh --model <id>=<window> [<id>=<window> ...]
-   ```
-
-   Relay what it prints, its warnings first: a setting elsewhere can win over this one.
-   It takes effect in new sessions. Never edit settings without this question.
-
-   If `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` is set, say it should go: `/context` does
-   not show it, so whether it still moves the trigger is unconfirmed. `apply.sh` leaves it.
-5. Where the Artifact tool exists and they want a link, publish `assets/chart.html` with
-   `report.json` beside it (`files`); nothing in the page is written by you.
+`autoCompactWindow` takes tokens, 100000–1000000, and the reports write it in K. Precedence:
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then `modelSettings.<model>`, then the top-level setting.
+`apply.sh` leaves `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` where it is and warns of it: `/context`
+does not show it, so whether it still moves the trigger is unconfirmed.
 
 ## The report
 
@@ -108,9 +70,9 @@ single-model and per-project views use the same rules over their own records. Re
 [references/model.md](references/model.md) before changing a constant or when
 asked how good the number is.
 
-## What to tell the user
+## What it advises
 
-The last lines of the text report and the top of the page say it, and you pass it on:
+The last lines of the text report, the top of the page and the command say the same:
 
 | State | Say |
 |---|---|
@@ -122,9 +84,9 @@ The last lines of the text report and the top of the page say it, and you pass i
 | 30 or more | The recommendation |
 
 Where a change is on the table (a number set, or 30 or more), an estimate under 200K is
-raised to 200K, and the report says so: pass on that the estimate was lower.
+raised to 200K, and the report says so.
 
-Give the setting, never the point it fires at: the buffer between them is Claude Code's
+It gives the setting, never the point it fires at: the buffer between them is Claude Code's
 and can change, so the reports leave it out.
 
 ## Common mistakes

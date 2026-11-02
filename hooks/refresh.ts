@@ -2,9 +2,11 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
 import type { Snapshot } from '../types'
+import { tuningAdvice } from './digest/autocompact'
 import { effortKey, effortSamplesOf } from './digest/effort'
 import { emptyRun, noChat, same } from './digest/record'
 import { clean, cleaned, parsed } from './digest/text'
+import { openTuningReport, readTuning, writeTuning } from './record/autocompact'
 import { linkSession, readHistory } from './record/transcript'
 import { ledgerKey, measuredOf, type Turn } from './state'
 
@@ -222,15 +224,31 @@ export async function report($: EngineInterface) {
 }
 
 // The auto-compact report needs no model: its script reads the logs, writes the data and opens the page.
-const AUTOCOMPACT_REPORT = 'skills/autocompact-tuning/scripts/report.sh'
-
 export async function autocompactReport($: EngineInterface) {
   $.ui.toast('Auto-compact report: reading the logs')
   try {
-    const { exitCode, stderr } = await $.process.run(['bash', `${$.plugin.root}/${AUTOCOMPACT_REPORT}`], { timeoutMs: 300_000 })
-    $.ui.toast(exitCode === 0 ? 'Auto-compact report: opened in your browser' : `Auto-compact report: ${clean(stderr).trim() || `stopped with code ${exitCode}`}`)
+    const failure = await openTuningReport($)
+    $.ui.toast(`Auto-compact report: ${failure ?? 'opened in your browser'}`)
   } catch (err) {
     $.ui.toast(`Auto-compact report: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
+
+// /autocompact-tuning: the report, what it comes to, and whether to write it. No turn of the model's, and nothing in its context.
+export async function autocompactTuning($: EngineInterface) {
+  try {
+    $.ui.toast('Auto-compact tuning: reading the logs')
+    const failure = await openTuningReport($)
+    if (failure) return `Auto-compact tuning: ${failure}`
+    const { lines, question, options } = tuningAdvice(await readTuning($))
+    const said = lines.join('\n')
+    if (!question) return said
+    // Dismissed, or under -p with no one to ask, it rejects; free text under Other names no option.
+    const picked = await $.ui.ask(question, { header: 'Setting', options: options.map(o => o.label) }).catch(() => null)
+    const args = options.find(o => o.label === picked)?.args
+    return `${said}\n${args ? await writeTuning($, args) : 'Nothing was written.'}`
+  } catch (err) {
+    return `Auto-compact tuning: ${err instanceof Error ? err.message : String(err)}`
   }
 }
 
