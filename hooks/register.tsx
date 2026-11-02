@@ -8,6 +8,7 @@ import { byCost, costModelOf, ledgerOf, spendsOf, sumKinds } from './digest/cost
 import { eventGroupsOf, type EventGroup, KIND_FILTERS, type KindFilter, pickEvents, type WhoFilter } from './digest/events'
 import { forecast, forecastInputs } from './digest/forecast'
 import { estimateTokens, noChat, same } from './digest/record'
+import { clean, cleaned } from './digest/text'
 import { liveReqsOf } from './digest/turns'
 import { usesOf } from './digest/uses'
 import { bashEnded, bashStarted } from './record/children'
@@ -185,11 +186,12 @@ export const register: Register = on => {
         // Source stays unknown.
       }
       const origin = e.origin.kind
+      const name = clean(e.command)
       await update($, commands, m => {
-        const c = m[e.command]
+        const c = m[name]
         return {
           ...m,
-          [e.command]: { count: (c?.count ?? 0) + 1, source, plugin, origins: { ...c?.origins, [origin]: (c?.origins[origin] ?? 0) + 1 } },
+          [name]: { count: (c?.count ?? 0) + 1, source, plugin, origins: { ...c?.origins, [origin]: (c?.origins[origin] ?? 0) + 1 } },
         }
       })
     }
@@ -230,7 +232,7 @@ export const register: Register = on => {
       const now = await $.clock.now()
       // The same turn started again (a setting switched mid-turn) keeps its start.
       await setTurn($, t => ({
-        ...(!t.isBusy || e.turnId !== t.busyTurn ? { busySince: now, busyText: e.text.replace(/\s+/g, ' ').trim() } : { busySince: t.busySince, busyText: t.busyText }),
+        ...(!t.isBusy || e.turnId !== t.busyTurn ? { busySince: now, busyText: clean(e.text).replace(/\s+/g, ' ').trim() } : { busySince: t.busySince, busyText: t.busyText }),
         busyTurn: e.turnId,
         hasHeardTurn: true,
         isBusy: true,
@@ -251,10 +253,11 @@ export const register: Register = on => {
   // A skill's prompt as the model reads it: this is what a skill really costs once invoked.
   on('skill.prompt', async ($, e, next) => {
     const tokens = estimateTokens(e.text)
-    const source = e.pluginName ? `${e.source}:${e.pluginName}` : e.source
+    const source = clean(e.pluginName ? `${e.source}:${e.pluginName}` : e.source)
+    const skill = clean(e.skill)
     await update($, skills, m => ({
       ...m,
-      [e.skill]: { count: (m[e.skill]?.count ?? 0) + 1, tokens: (m[e.skill]?.tokens ?? 0) + tokens, source },
+      [skill]: { count: (m[skill]?.count ?? 0) + 1, tokens: (m[skill]?.tokens ?? 0) + tokens, source },
     }))
     return next(e)
   })
@@ -333,6 +336,8 @@ export const register: Register = on => {
       const gridOf = () => Math.max(snap.window || 0, max)
       const pctOf = (n: number, of = max) => `${((n / Math.max(1, of)) * 100).toFixed(1)}%`
       // Past turns and the whole event log each fill the pane as a page of their own.
+      // Why a read failed, as it comes to be drawn: a tool's error may quote what it read.
+      const why = (err: unknown) => clean(err instanceof Error ? err.message : String(err))
       const go = (to: 'turns' | 'log' | 'tokens' | 'components' | 'effort' | `cmp:${'log' | 'main'}:${string}` | `init:${string}` | `chat:${ChatKind}` | null) => () => update($, page, () => to)
       // A shaped Init page reads main's system prompt and tools as it opens, from its request since the last compaction;
       // one read or done is kept until another compaction moves the boundary, a failed one read again.
@@ -343,7 +348,7 @@ export const register: Register = on => {
           await update($, mcpInstructions, () => ({ status: 'pending' as const, detail: '' }))
           await readMcpInstructions($).then(
             data => update($, mcpInstructions, () => ({ status: 'ok' as const, detail: '', data })),
-            err => update($, mcpInstructions, () => ({ status: 'error' as const, detail: err instanceof Error ? err.message : String(err) })),
+            err => update($, mcpInstructions, () => ({ status: 'error' as const, detail: why(err) })),
           )
         }
         if (!INIT_PAGES.get(name)?.isShaped) return
@@ -355,7 +360,7 @@ export const register: Register = on => {
         try {
           await settle({ boundary, status: 'ok', detail: '', data: await readMainShape($, boundary) })
         } catch (err) {
-          await settle({ boundary, status: 'error', detail: err instanceof Error ? err.message : String(err) })
+          await settle({ boundary, status: 'error', detail: why(err) })
         }
       }
       // A memory file is read the first time its fold opens, as a subagent's initial prompt is.
@@ -368,9 +373,9 @@ export const register: Register = on => {
         const settle = (got: { status: 'pending' | 'ok' | 'error'; detail: string; data?: string }) => update($, memoryText, m => ({ ...m, [path]: got }))
         await settle({ status: 'pending', detail: '' })
         try {
-          await settle({ status: 'ok', detail: '', data: await $.fs.read(path) })
+          await settle({ status: 'ok', detail: '', data: clean(await $.fs.read(path)) })
         } catch (err) {
-          await settle({ status: 'error', detail: err instanceof Error ? err.message : String(err) })
+          await settle({ status: 'error', detail: why(err) })
         }
       }
       // A compaction's page reads what the window restarted from as it opens; the last one read is kept.
@@ -387,7 +392,7 @@ export const register: Register = on => {
         try {
           await settle({ uuid, status: 'ok', detail: '', data: await readRestart($, uuid, c.keep ?? []) })
         } catch (err) {
-          await settle({ uuid, status: 'error', detail: err instanceof Error ? err.message : String(err) })
+          await settle({ uuid, status: 'error', detail: why(err) })
         }
       }
       // A subagent's initial prompt is read the first time its fold opens; one read or done is kept, a failed one read again.
@@ -403,7 +408,7 @@ export const register: Register = on => {
         try {
           await settle({ status: 'ok', detail: '', data: await readPrompt($, id) })
         } catch (err) {
-          await settle({ status: 'error', detail: err instanceof Error ? err.message : String(err) })
+          await settle({ status: 'error', detail: why(err) })
         }
       }
       // The effort page reads every session's kept turns as it opens.
@@ -413,7 +418,7 @@ export const register: Register = on => {
         try {
           const keys = (await $.store.keys()).filter(x => x.startsWith(EFFORT_PREFIX))
           const values = await Promise.all(keys.map(x => $.store.get(x)))
-          await update($, effortAll, () => ({ status: 'ok' as const, bySession: Object.fromEntries(keys.map((x, n) => [x.slice(EFFORT_PREFIX.length), samplesIn(values[n])])) }))
+          await update($, effortAll, () => ({ status: 'ok' as const, bySession: Object.fromEntries(keys.map((x, n) => [x.slice(EFFORT_PREFIX.length), samplesIn(cleaned(values[n]))])) }))
         } catch {
           await update($, effortAll, () => ({ status: 'error' as const, bySession: {} }))
         }
@@ -1417,7 +1422,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="column">
           <Text {...S.danger}>Session lens failed to render</Text>
-          <Text>{String(error)}</Text>
+          <Text>{clean(String(error))}</Text>
         </Box>
       )
     }

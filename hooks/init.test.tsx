@@ -72,7 +72,7 @@ const USAGE = {
 }
 
 type On = Parameters<Extract<Parameters<typeof test>[1], (...args: any[]) => unknown>>[1]
-const setUp = (on: On, instructions: { name: string; text: string }[] = []) => {
+const setUp = (on: On, instructions: { name: string; text: string }[] = [], files: Record<string, string> = {}) => {
   mock.clock(on)
   const calls = { shape: [] as string[], memory: [] as string[], instructions: 0 }
   let memoryFails = 1
@@ -94,6 +94,7 @@ const setUp = (on: On, instructions: { name: string; text: string }[] = []) => {
     // An auto-memory index: each entry links the file that holds it, one of them back to the index itself.
     '/home/u/mem/MEMORY.md': '# Memory Index\n\n- [Push via MR](push.md) — master is protected\n- [Index](MEMORY.md) — itself\n- [Docs](https://example.com/a.md) — a web page',
     '/home/u/mem/push.md': '---\nname: push\n---\nOne branch, push with an MR.',
+    ...files,
   }
   on('fs.read', (_, e) => {
     const path = Object.keys(FILES).find(p => JSON.stringify(e).includes(`"${p}"`))
@@ -208,6 +209,91 @@ test('an entry of a memory index opens into the file it links, read as it first 
   await press(entry)
   expect(await text(/^      One branch, push with an MR\.$/)).toBeTruthy()
   expect(calls.memory).toEqual(['/home/u/mem/MEMORY.md', '/home/u/mem/push.md'])
+  await ui.unmount()
+})
+
+// An index whose links lead everywhere a link can: under its folder, and out of it.
+const LINKS = [
+  '- [Near](near.md) — beside the index',
+  '- [Dotted](./dotted.md) — beside the index, said the long way',
+  '- [Deep](topics/deep.md) — below the index',
+  '- [Round](topics/../round.md) — out and back in',
+  '- [Whole](/home/u/mem/whole.md) — absolute, and under the folder',
+  '- [Self](./MEMORY.md) — itself, said the long way',
+  '- [Up](../secrets.md) — out of the folder',
+  '- [Far](topics/../../../etc/far.md) — out of the folder by way of it',
+  '- [Abs](/etc/abs.md) — absolute, and outside',
+  '- [AbsUp](/home/u/mem/../abs-up.md) — absolute, and out by its dots',
+  '- [Back](..\\back.md) — out of the folder, where a backslash separates',
+].join('\n')
+const LINKED = {
+  '/home/u/mem/MEMORY.md': LINKS,
+  '/home/u/mem/near.md': 'Near text.',
+  '/home/u/mem/dotted.md': 'Dotted text.',
+  '/home/u/mem/topics/deep.md': '- [Back up](../up-again.md) — out of its own folder, not of the index\'s\n- [Past it](../../past.md) — out of the index\'s too',
+  '/home/u/mem/round.md': 'Round text.',
+  '/home/u/mem/whole.md': 'Whole text.',
+  '/home/u/mem/up-again.md': 'Up again text.',
+  // What a link must not reach, whichever way it is written.
+  '/home/u/secrets.md': 'SECRET',
+  '/home/u/past.md': 'SECRET',
+  '/etc/far.md': 'SECRET',
+  '/etc/abs.md': 'SECRET',
+  '/home/u/abs-up.md': 'SECRET',
+  '/home/u/mem/..\\back.md': 'SECRET',
+}
+
+test('a memory link opens when it stays under the file that lists it, however it is written, and normalised', async ($, on) => {
+  const calls = setUp(on, [], LINKED)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'session-lens', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', viewport: { columns: 80, rows: 400 } })
+  const press = (key: string) => $.ui.press({ plugin: 'session-lens', key: `node-${key}`, requestId: 'session-lens', surface: 'terminal' })
+  const text = async (re: RegExp) => (await ui.find({ type: 'Text', text: re }))?.text
+  const INDEX = 'init-mem-/home/u/mem/MEMORY.md'
+
+  await press('ctx-grid')
+  await press('init-Memory files')
+  await press(INDEX)
+  for (const [file, words] of [['near.md', 'Near text.'], ['dotted.md', 'Dotted text.'], ['round.md', 'Round text.'], ['whole.md', 'Whole text.']]) {
+    await press(`${INDEX}>/home/u/mem/${file}`)
+    expect(await text(new RegExp(`^      ${(words ?? '').replace('.', '\\.')}$`))).toBeTruthy()
+  }
+  // Said the long way, it is still the file open above it.
+  expect(await ui.find({ key: `node-${INDEX}>/home/u/mem/MEMORY.md` })).toBeFalsy()
+  expect(await text(/^    - \[Self\]\(\.\/MEMORY\.md\)/)).toBeTruthy()
+
+  // A file reached through a link keeps the room of the index that listed it: `..` from below the folder still opens.
+  const deep = `${INDEX}>/home/u/mem/topics/deep.md`
+  await press(deep)
+  await press(`${deep}>/home/u/mem/up-again.md`)
+  expect(await text(/^        Up again text\.$/)).toBeTruthy()
+  expect(await text(/^      - \[Past it\]\(\.\.\/\.\.\/past\.md\)/)).toBeTruthy()
+  expect(calls.memory.filter(p => p.endsWith('past.md'))).toEqual([])
+  await ui.unmount()
+})
+
+test('a memory link out of the folder of the file that lists it is a plain line, and is never read', async ($, on) => {
+  const calls = setUp(on, [], LINKED)
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.command.run({ command: 'session-lens', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal', viewport: { columns: 80, rows: 400 } })
+  const press = (key: string) => $.ui.press({ plugin: 'session-lens', key: `node-${key}`, requestId: 'session-lens', surface: 'terminal' })
+  const text = async (re: RegExp) => (await ui.find({ type: 'Text', text: re }))?.text
+  const INDEX = 'init-mem-/home/u/mem/MEMORY.md'
+
+  await press('ctx-grid')
+  await press('init-Memory files')
+  await press(INDEX)
+  await press(`more-${INDEX}`)
+  for (const target of ['/home/u/secrets.md', '/etc/far.md', '/etc/abs.md', '/home/u/abs-up.md', '/home/u/mem/..\\back.md']) expect(await ui.find({ key: `node-${INDEX}>${target}` })).toBeFalsy()
+  // Written out as the line it is, as one with no link.
+  expect(await text(/^    - \[Up\]\(\.\.\/secrets\.md\) — out of the folder$/)).toBeTruthy()
+  expect(await text(/^    - \[Far\]\(topics\/\.\.\/\.\.\/\.\.\/etc\/far\.md\)/)).toBeTruthy()
+  expect(await text(/^    - \[Abs\]\(\/etc\/abs\.md\) — absolute, and outside$/)).toBeTruthy()
+  expect(await text(/^    - \[Back\]\(\.\.\\back\.md\)/)).toBeTruthy()
+  expect(await text(/^    - \[AbsUp\]\(\/home\/u\/mem\/\.\.\/abs-up\.md\)/)).toBeTruthy()
+  expect(calls.memory).toEqual(['/home/u/mem/MEMORY.md'])
   await ui.unmount()
 })
 

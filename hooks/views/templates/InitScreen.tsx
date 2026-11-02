@@ -1,5 +1,6 @@
 import type { Shape, Snapshot } from '../../../types'
 import { estimateTokens } from '../../digest/record'
+import { linkedFile } from '../../digest/text'
 import { cut, fit, k, left, width } from '../layout'
 import { G, S, SPACE, T } from '../palette'
 import type { UI } from '../ui'
@@ -75,18 +76,18 @@ export function InitScreen({ ui, host, name, kind, width: screenWidth, rowWidth,
           : [<Text color={T.text.muted}>Main's system prompt and tools are not in the transcript</Text>]
   const linesOf = (text: string) => text.split('\n').map(text => ({ text }))
   // An index such as auto-memory's MEMORY.md links each entry as `- [Title](file.md) — hook`: the entry opens into the
-  // file it links, read as its fold first opens, and so on down, never into a file already open above it.
+  // file it links, read as its fold first opens, and so on down, never into a file already open above it, nor out of the
+  // folder of the file /context listed: a link that leaves it is the line it is.
   const memoryBody = (key: string, path: string, indent: number, above: string[]): (JSX.Element | null)[] => {
     const pad = ' '.repeat(indent)
     const text = memOf[path]
     if (!text || text.status === 'pending') return [<Text key={`${key}-wait`} {...S.live}>{`${pad}Loading…`}</Text>]
     if (text.status === 'error') return [<Text key={`${key}-err`} color={T.state.danger}>{`${pad}Could not read it: ${text.detail}`}</Text>]
-    const dir = path.slice(0, path.lastIndexOf('/') + 1)
     const lines = (text.data ?? '').split('\n')
     return [
       ...host.paged(key, lines).map((line, n) => {
         const link = /^\s*[-*]\s+\[([^\]]+)\]\(([^)\s]+\.md)\)\s*(.*)$/.exec(line)
-        const target = link?.[2] && !/^[a-z]+:/i.test(link[2]) ? (link[2].startsWith('/') ? link[2] : `${dir}${link[2]}`) : undefined
+        const target = link?.[2] ? linkedFile(link[2], path, above[0] ?? path) : undefined
         if (!link || target === undefined || above.includes(target)) return <Text key={`${key}-${n}`}>{`${pad}${line === '' ? ' ' : line}`}</Text>
         const sub = `${key}>${target}`
         return (

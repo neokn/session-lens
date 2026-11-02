@@ -4,6 +4,7 @@ import type { EngineInterface } from 'claude-code'
 import type { Snapshot } from '../types'
 import { effortKey, effortSamplesOf } from './digest/effort'
 import { emptyRun, noChat, same } from './digest/record'
+import { clean, cleaned, parsed } from './digest/text'
 import { linkSession, readHistory } from './record/transcript'
 import { ledgerKey, measuredOf, type Turn } from './state'
 
@@ -203,7 +204,7 @@ function findReport($: EngineInterface) {
 async function findMarket($: EngineInterface) {
   try {
     const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
-    const known = JSON.parse(await $.fs.read(`${config}/plugins/known_marketplaces.json`)) as Record<string, { source?: { repo?: string } }>
+    const known = parsed<Record<string, { source?: { repo?: string } }>>(await $.fs.read(`${config}/plugins/known_marketplaces.json`))
     cycle.reportMarket = Object.entries(known).find(([, m]) => m.source?.repo === REPORT_REPO)?.[0]
   } catch {
     cycle.reportMarket = undefined
@@ -241,7 +242,8 @@ export async function refresh($: EngineInterface, isAsked = false) {
 async function readAll($: EngineInterface) {
   try {
     const { context, cost, startedAt } = await $.session.usage({ breakdown: 'summary' })
-    const b = context.breakdown
+    // Names a skill's or a server's own files chose, among others: the engine hands them on as they are.
+    const b = cleaned(context.breakdown)
     if (!b) return
     const snap: Snapshot = {
       model: b.model,
@@ -360,7 +362,7 @@ async function readAll($: EngineInterface) {
     }
     await update($, history, () => ({ status: 'ok', detail: `${d.lines} lines, ${Object.keys(d.agents).length} subagents` }))
   } catch (error) {
-    await update($, history, () => ({ status: 'error', detail: String(error).slice(0, 200) }))
+    await update($, history, () => ({ status: 'error', detail: clean(String(error).slice(0, 200)) }))
   }
 }
 
@@ -389,7 +391,7 @@ export const openInRecord = (isOpen: boolean) => {
 // The version this copy of the lens is, so the pane says which one runs.
 export async function readVersion($: EngineInterface) {
   try {
-    cycle.version = (JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as { version?: string }).version
+    cycle.version = parsed<{ version?: string }>(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)).version
   } catch {
     cycle.version = undefined
   }

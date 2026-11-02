@@ -3,6 +3,7 @@ import type { EngineInterface } from 'claude-code'
 import type { AgentRun, Opening, Prompt, Restart, Shape } from '../../types'
 import { type Digest, est, type Row, scan } from '../digest/record'
 import { type AgentDigest, agentDigestOf, hookKey, sessionOf } from '../digest/session'
+import { clean, parsed } from '../digest/text'
 import { type Meta, ms, runOf } from '../digest/turns'
 import { type BashWindow, type ChildLink, guessChildren, readChildren, sessionsDirOf } from './children'
 
@@ -64,7 +65,7 @@ async function wholeRowsOf($: EngineInterface, file: string): Promise<Row[]> {
   const out = await $.process.run(['jq', '-c', FILTER, file], { timeoutMs: 60_000 })
   if (out.exitCode !== 0) throw new Error(`jq exited with ${out.exitCode}: ${out.stderr.slice(0, 200)}`)
   if (out.isStdoutTruncated) throw new Error('jq output exceeds 4 MiB')
-  return out.stdout.split('\n').filter(Boolean).map(line => JSON.parse(line) as Row)
+  return out.stdout.split('\n').filter(Boolean).map(line => parsed<Row>(line))
 }
 
 async function rowsOf($: EngineInterface, file: string): Promise<Row[]> {
@@ -84,7 +85,7 @@ async function rowsOf($: EngineInterface, file: string): Promise<Row[]> {
         continue
       }
       const progressed = end > have.end
-      have = { end, rows: have.rows.concat(lines.filter(Boolean).map(line => JSON.parse(line) as Row)) }
+      have = { end, rows: have.rows.concat(lines.filter(Boolean).map(line => parsed<Row>(line))) }
       if (end >= total) break
       if (!progressed) {
         // One line longer than the slice: widen it.
@@ -162,7 +163,7 @@ async function hookSources($: EngineInterface, home: string, root: string): Prom
   const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`
   const json = async (path: string): Promise<any> => {
     try {
-      return JSON.parse(await $.fs.read(path))
+      return parsed(await $.fs.read(path))
     } catch {
       return undefined
     }
@@ -285,7 +286,7 @@ async function readShape($: EngineInterface, file: string, boundary = ''): Promi
   if (out.exitCode !== 0) throw new Error(`jq exited with ${out.exitCode}: ${out.stderr.slice(0, 200)}`)
   const line = out.stdout.split('\n').find(Boolean)
   if (!line) return undefined
-  const raw = JSON.parse(line) as { system: string; tools: { name: string; n: number }[] }
+  const raw = parsed<{ system: string; tools: { name: string; n: number }[] }>(line)
   return { system: raw.system, tools: raw.tools.map(t => ({ name: t.name, tokens: est(t.n) })) }
 }
 
@@ -296,7 +297,7 @@ export async function readRestart($: EngineInterface, uuid: string, keep: string
   const out = await $.process.run(['jq', '-c', '-n', '--arg', 'b', uuid, '--argjson', 'keep', JSON.stringify(keep), RESTART_FILTER, `${dir}/${id}.jsonl`], { timeoutMs: 60_000 })
   if (out.exitCode !== 0) throw new Error(`jq exited with ${out.exitCode}: ${out.stderr.slice(0, 200)}`)
   if (out.isStdoutTruncated) throw new Error('jq output exceeds 4 MiB')
-  const rows = out.stdout.split('\n').filter(Boolean).map(line => JSON.parse(line) as RestartRow)
+  const rows = out.stdout.split('\n').filter(Boolean).map(line => parsed<RestartRow>(line))
   // A kept message is written again after the boundary: its latest copy stands, in the order they were kept.
   const byId = new Map(rows.filter(r => r.k === 'keep' && r.u).map(r => [r.u ?? '', r]))
   const fixed = new Map<string, number>()
@@ -329,7 +330,7 @@ export async function readMcpInstructions($: EngineInterface): Promise<{ name: s
   const out = await $.process.run(['jq', '-c', '-n', INSTRUCTIONS_FILTER, `${dir}/${id}.jsonl`], { timeoutMs: 60_000 })
   if (out.exitCode !== 0) throw new Error(`jq exited with ${out.exitCode}: ${out.stderr.slice(0, 200)}`)
   if (out.isStdoutTruncated) throw new Error('jq output exceeds 4 MiB')
-  return out.stdout.split('\n').filter(Boolean).map(line => JSON.parse(line) as { name: string; text: string })
+  return out.stdout.split('\n').filter(Boolean).map(line => parsed<{ name: string; text: string }>(line))
 }
 
 /** The system prompt and tools main's request was sent with after the boundary named (its last compaction), or from the start. */
@@ -352,7 +353,7 @@ export async function readPrompt($: EngineInterface, agentId: string): Promise<O
   const out = await $.process.run(['jq', '-c', '-n', PROMPT_FILTER, file], { timeoutMs: 60_000 })
   if (out.exitCode !== 0) throw new Error(`jq exited with ${out.exitCode}: ${out.stderr.slice(0, 200)}`)
   if (out.isStdoutTruncated) throw new Error('jq output exceeds 4 MiB')
-  return { messages: out.stdout.split('\n').filter(Boolean).map(line => JSON.parse(line) as Prompt[number]), shape: await readShape($, file) }
+  return { messages: out.stdout.split('\n').filter(Boolean).map(line => parsed<Prompt[number]>(line)), shape: await readShape($, file) }
 }
 
 // Hard links of this session's record, its transcript and everything in its folder (subagents, workflows, tool results), in
@@ -471,14 +472,15 @@ export async function readHistory($: EngineInterface): Promise<Digest> {
   for (const { at, files, ended } of places) for (const f of files) {
     const m = /^agent-(.+)\.jsonl$/.exec(f.name)
     if (!m) continue
-    const agentId = m[1] ?? f.name
+    // Its name goes on a button: the file is found by `f.name`, as it is on the disk.
+    const agentId = clean(m[1] ?? f.name)
     const file = `${at}/${f.name}`
     agentFiles.set(agentId, file)
     const hit = await digestOf($, file, f.size)
     agents[agentId] = hit.run
     calls[agentId] = hit
     try {
-      metas[agentId] = JSON.parse(await $.fs.read(`${at}/agent-${agentId}.meta.json`))
+      metas[agentId] = parsed(await $.fs.read(`${at}/agent-${agentId}.meta.json`))
     } catch {
       metas[agentId] = {}
     }
@@ -489,7 +491,7 @@ export async function readHistory($: EngineInterface): Promise<Digest> {
     // A skill that runs forked (a `/name` the person typed) is a subagent of its own, named in a file beside it.
     if (files.some(x => x.name === `agent-${agentId}.forked-skill.json`)) {
       try {
-        const forked = JSON.parse(await $.fs.read(`${at}/agent-${agentId}.forked-skill.json`))
+        const forked = parsed<{ skillName?: unknown }>(await $.fs.read(`${at}/agent-${agentId}.forked-skill.json`))
         if (typeof forked?.skillName === 'string') metas[agentId] = { ...metas[agentId], skill: forked.skillName }
       } catch {
         // Unreadable: the agent is still listed, only not as a skill.

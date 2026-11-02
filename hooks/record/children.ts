@@ -1,5 +1,7 @@
 import type { EngineInterface } from 'claude-code'
 
+import { clean } from '../digest/text'
+
 /**
  * A `claude -p` session that a Bash call of this session started, directly or through anything it ran: `pid` its process,
  * `child` its session id, `cwd` where it started (which names the folder of its record), `at` when it was seen (epoch ms),
@@ -34,7 +36,7 @@ export function parseChildren(text: string): Children {
     }
     if (!v || typeof v !== 'object') continue
     if (typeof v.child === 'string' && isNum(v.pid) && isNum(v.at)) {
-      out.links.push({ pid: v.pid, child: v.child, cwd: typeof v.cwd === 'string' ? v.cwd : '', at: v.at, ...(typeof v.call === 'string' ? { call: v.call } : {}) })
+      out.links.push({ pid: v.pid, child: clean(v.child), cwd: typeof v.cwd === 'string' ? v.cwd : '', at: v.at, ...(typeof v.call === 'string' ? { call: v.call } : {}) })
     } else if (Array.isArray(v.watched) && isNum(v.watched[0]) && isNum(v.watched[1])) {
       out.watched.push({ from: v.watched[0], to: v.watched[1] })
     }
@@ -140,7 +142,7 @@ type PidFile = { pid: number; child: string; cwd: string }
 
 const pidFileOf = (v: unknown): PidFile | undefined => {
   const o = v as Record<string, unknown> | null
-  return o && isNum(o.pid) && typeof o.sessionId === 'string' ? { pid: o.pid, child: o.sessionId, cwd: typeof o.cwd === 'string' ? o.cwd : '' } : undefined
+  return o && isNum(o.pid) && typeof o.sessionId === 'string' ? { pid: o.pid, child: clean(o.sessionId), cwd: typeof o.cwd === 'string' ? o.cwd : '' } : undefined
 }
 
 // What this process knows. A reload of the code starts it again, and the watcher of the code before dies with that code.
@@ -347,7 +349,8 @@ export async function guessChildren($: EngineInterface, home: string, windows: B
     for (const line of out.stdout.split('\n')) {
       const [file, ts] = line.split('\t')
       const at = Date.parse(ts ?? '')
-      const child = /([^/]+)\.jsonl$/.exec(file ?? '')?.[1]
+      const named = /([^/]+)\.jsonl$/.exec(file ?? '')?.[1]
+      const child = named && clean(named)
       if (!file || !child || child === self || Number.isNaN(at)) continue
       // Of calls that ran at once, the one that began last holds it most closely.
       const w = fresh.filter(x => at >= x.from && at <= x.to).sort((a, b) => b.from - a.from)[0]

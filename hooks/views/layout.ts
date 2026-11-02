@@ -9,19 +9,22 @@ export const K_W = 6
 
 // Terminal cells: CJK and other wide characters take two.
 const cells = (ch: string) => (isWide(ch) ? 2 : 1)
-export const width = (s: string) => [...s].reduce((n, ch) => n + cells(ch), 0)
+// A tab goes as far as a terminal's next stop, which a width reckoned apart from the column cannot know: wherever a width is
+// reckoned it is four spaces, and comes out as them.
+const spaced = (s: string) => s.replaceAll('\t', '    ')
+export const width = (s: string) => [...spaced(s)].reduce((n, ch) => n + cells(ch), 0)
 export const fit = (s: string, w: number) => {
   let out = ''
   let n = 0
-  for (const ch of s) {
+  for (const ch of spaced(s)) {
     if (n + cells(ch) > w) break
     out += ch
     n += cells(ch)
   }
   return out + ' '.repeat(Math.max(0, w - n))
 }
-export const left = (s: string, w: number) => ' '.repeat(Math.max(0, w - width(s))) + s
-export const cut = (s: string, w: number) => (width(s) <= w ? s : `${fit(s, w - 1).trimEnd()}…`)
+export const left = (s: string, w: number) => ' '.repeat(Math.max(0, w - width(s))) + spaced(s)
+export const cut = (s: string, w: number) => (width(s) <= w ? spaced(s) : `${fit(s, w - 1).trimEnd()}…`)
 // A prompt is shown up to 80 cells, wherever it appears.
 export const prompt = (s: string) => cut(s, 80)
 
