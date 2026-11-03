@@ -1,158 +1,89 @@
-# The model behind the setting
+# How the setting is chosen
 
-## Cost model
+No request is run again. A formula takes a handful of figures from the logs and the model's prices, and
+gives the window where a compaction pays for itself: where what a round costs in reading a larger and
+larger context equals what one compaction costs.
 
-Per request at context size `x`, with `g` new input and `O` output
-(tokens; prices per million):
-
-```
-cost(request) = read · x + write · g + out · O
-cost(compact at T) = read · T + out · s + write · w
-```
-
-- `read` cache read, `write` 1h cache write, `out` output.
-- Prices per million, input / read / 5m write / 1h write / output: Sonnet 5.5
-  2 / 0.20 / 2.5 / 4 / 10; Opus 5.5 4 / 0.20 / 5 / 8 / 20; Fable 5.1 10 / 0.25 / 12.5 /
-  20 / 50; Haiku 5.5 0.1 / 0.01 / 0.125 / 0.2 / 0.5, and 0.5 / 0.05 / 0.625 / 1 / 2.5
-  past 100k of input. A write is 1.25× input at 5m and 2× at 1h.
-- A model without its exact price is priced by the one of its name, with a warning: the
-  report names each such model. One of no known name stays out of the cost.
-- `write` is those two weighed by the share of 5m. A request writes to one lifetime or
-  the other, never both, so a per-request share is 0 or 1 and has no log. Each lifetime
-  gets its normal size (log mean, outliers out), and the share is what those sizes times
-  their request counts come to. Of `g`, the normal `input_tokens` is priced as input and
-  the rest as a write.
-- `s` the summary, `A` the context the first request after a compaction carries,
-  `w` what that request writes to cache. All three are measured from the logs.
-  `A` is larger than `s`, as the system prompt, tools and memory go back in.
-
-Settings are compared over the same work, so that auto-compact off is on the same
-footing as any trigger: the requests it takes the context to reach 1M without
-compacting, at this user's input and output.
+## The formula, for one mode of one model
 
 ```
-H = ⌊(1M − O − I) / g⌋ + 1        I the initial context
+after    = initial context + 33K                         what a compaction leaves: the compact buffer, taken as filled
+base     = after + rework                                where the next round's work starts
+cost     = base                                          reading the whole context once, at the compaction
+         + (write ÷ read) × (rewrite × after + rework)   writing the cache again
+         + (output ÷ read) × compaction output           what the compaction writes out
+         + rework requests × (after + rework ÷ 2)        reading under the requests that read files again
+round    = √( 2 × growth × cost )                        the context a round should grow by
+window   = base + round + 33K                            33K: auto-compact fires that far below the window
 ```
 
-Those `H` requests run under each trigger: the context starts at `I`, grows by `g`,
-and at `T` is compacted down to `A`. Off never compacts. The total is
+All of it in tokens of cached reading, the model's read price the unit. Per 1M tokens of progress, a
+window `W` costs
 
 ```
-write · I + H · (write · g + out · O) + read · Σ x + n · (out · s + write · w) + read · Σ T'
+read × ( base ÷ growth + r ÷ (2 × growth) + 1 + cost ÷ r ),   r = max(W − 33K − base, growth)
 ```
 
-with `Σ x` the context of each request, `n` the compactions and `T'` the context at
-each. The script tries every trigger by 1k from just above `A` to 967k (1M less the
-buffer), and for the single setting minimises the costs weighed by this user's
-Sonnet, Opus and Fable requests. Haiku is left out of the weights: its price steps
-with the input, which this sum cannot carry, and its share is small. The page walks
-it request by request when Haiku is chosen alone.
+so below where a mode starts, every request compacts. `window` is where that is lowest.
 
-The cost steps with `T`, as `n` is whole: a trigger that fires once more near the
-end of `H` pays for a compaction it never earns back. So the lowest point is exact
-for this `H`, and a nearby trigger can cost a few percent more or less. Over a long
-run the balance is `T ≈ A + √(2K · g / read)`, with
-`K = read · A + out · s + write · w`, which is why the trigger moves with the square
-root of `g` under a fixed size.
+33K plays two parts. As what a compaction leaves, it is a fixed figure. As what a compaction writes out
+it is not: that is the compaction output below.
 
-## What input and output do
+## Where each figure comes from
 
-`out · O` is paid on every request under every trigger, so it moves the optimum only
-through `H` and `g`: the output of one request is cached input to the next. So a higher input/output ratio at the same output means
-a larger `g`, and a later trigger, by the square root.
+Each of the last 1, 7 and 30 days on its own, the three averaged 8 : 5 : 3 over the spans that have the
+figure. One a span lacks is borrowed from the model's last 30 days, every mode and project; one the
+model lacks wholly takes the next, wider tier, as below.
 
-The script reports the rank correlation of a cycle's input/output with its
-compression ratio, beside that of the context before the compaction with it.
-Summaries stay about the same size, so the ratio mostly follows how large the
-context was. With this few compactions neither is evidence of a cause.
+- **Initial context**: the first request of each session, the first prompt in it. A session that opens on
+  a summary went on from another and is left out. From the sessions that reach 200K, the ones a
+  compaction serves; with none, from all. What lies 2 deviations out in log space, among the model's
+  sessions of every mode, is a first prompt rather than a mode's size and is dropped; of the rest, the
+  normal value (the mean once more than 2 deviations out are dropped).
+- **Growth**: each stretch between compactions, the 15 requests after one left out as rework, from the
+  median of its first three requests to that of its last three (a spike that falls back, as the
+  advisor's, cancels), the stretches' growth added up over their requests. From stretches that reach
+  200K with 10 requests or more; with none, from those of 10 or more; with none, from all.
+- **Rework, rework requests**: of each compaction, what the 15 requests after it read again with Read of
+  the files Read since the compaction before (characters ÷ 3.5), and how many requests did. Bash rereads
+  are not seen, so it is a floor. No compaction on record: 0.
+- **Compaction output**: the summary text (characters ÷ 3.5) times 2, as the analysis before it is
+  dropped from the log. The model's compactions of the last 30 days, else every model's, else 33K.
+- **Rewrite**: what the first request after a compaction writes to the cache, over what it sends; the
+  system prompt's prefix stays cached. A first request over 50K above the next is not what the
+  compaction left: the next is taken, and its write not. Else every model's, else 1.
+- **Write price**: the 5-minute and 1-hour prices, in the share the model's cache writes of the last 30
+  days were billed at.
 
-## The normal request
+Prices per million, read / 5m write / 1h write / output: Opus 5.5 0.20 / 5 / 8 / 20; Sonnet 5.5 0.20 /
+2.5 / 4 / 10; Fable 5.1 0.25 / 12.5 / 20 / 50; Haiku 5.5 0.01 / 0.125 / 0.2 / 0.5. Haiku goes dearer past
+100K of input; the formula takes the base price.
 
-Tokens per request are heavily right-skewed; their logarithms are close to normal
-(`log skew` near 0). So one request's normal input and output are `exp(mean)` in log
-space, over the pairs left when either value more than 2 deviations out drops its pair,
-judged once. Taken over the same pairs, their ratio is the normal ratio of each request.
-These describe one request, not a total. The cost adds them up, and what they leave out
-(the largest 1% of requests hold about 40% of the input in one user's logs) is growth
-the model does not see. The script prints the setting the raw means give beside it.
+## Modes, models, and the global
 
-## The chart
+One window serves a model in every mode, interactive, `claude -p` and subagent, though their initial
+context and growth differ. Each mode gives its own cost per 1M of progress at every window, by 1K; they
+are summed weighed by how much the mode's sessions that reach 200K grow, the progress a compaction
+serves (with none of them, by how much all grow), and the model's window is where the sum is lowest.
 
-`assets/chart.html` computes the same total from `report.json`, so across all
-projects and models over 30 days, at the starting initial context, its lowest point
-is the recommendation. A project with no compaction of its own takes its
-compaction figures from all records. The page covers 30 days and has no filter by period
-or model, as it leans toward the last day and tables each model. Moving the initial context
-by `d` moves `A` and `w` by `d`, an assumption: the logs do not show a session's
-initial context changing. A larger initial context leaves fewer requests before 1M,
-so totals compare settings at one initial context, not initial contexts.
+The global serves every model without one of its own: the models' sums, in dollars, weighed the same
+way, so a dearer model counts for more.
 
-The scatter fits ordinary least squares, `after = a + b × compacted`, with `compacted =
-preTokens − the session's initial context`, as the summary leaves it out too. A
-compaction is an outlier there when its externally studentized residual exceeds 2 in
-size, judged once. It gives R² and the slope's 95% interval (Student's t).
+## From the lowest point to the advice
 
-## Ratio or fixed size
-
-Each compaction has its own ratio, `compacted ÷ summary`, and its own size, the summary.
-Each is taken in log space: what lies more than 2 sample deviations from the mean is
-dropped, once, never leaving fewer than 3, and `exp(mean)` is the normal value. Log
-deviations have no unit, so they say which is steadier. The cost assumes a ratio only
-when its deviation is under 0.9 of the size's, with at least 3 compactions and a ratio
-above 1; otherwise a fixed size. A ratio makes each compaction leave `max(T − I, 0) ÷
-ratio`. Either way the initial context goes back in, and the rest of `A` and `w` is what
-the logs show above the summary. Ratio and size take subagent compactions too, as they
-compact the same way and neither figure holds an initial context. What goes back in
-after a compaction comes from main-session compactions, whose initial context it holds.
-
-## Leaning toward the last day
-
-The input, output and uncached input the cost uses lean toward the last
-24 hours by partial pooling, in log space, on the requests left after outliers go:
-
-```
-weight = between ÷ (between + within ÷ m), at most 0.5
-value  = exp(weight · log(last day) + (1 − weight) · log(30-day normal))
-```
-
-- `m` the projects of the last day, and each project counts once however many requests
-  it made: requests of one project are not independent evidence. A selection of one
-  project counts sessions instead.
-- `within` the variance between projects on one day, pooled over days with several.
-- `between` the variance between days, less what `within` alone explains, at least 0
-  (the DerSimonian-Laird estimate).
-- The 5m share moves by the weight of the input. Compaction figures and the model mix
-  do not lean: the first are too few, and the second is priced as a share of requests.
-- Under 3 active days, with no day of several projects, or with no request in the last
-  24 hours, the weight is 0. The cap of 0.5 is a choice, as `between` is rough at this
-  few days. The text report's 7 and 1 days do not lean, as they are already recent.
-
-## Too few compactions
-
-Under 30 compactions (a common rule for trusting a mean) the figures are the measured
-ones with a warning, and no ratio or size is assumed. What the report advises then:
-
-- Auto-compact off: enable it first, whatever the samples. A number comes after.
-- No compaction at all: there is nothing to compute from, so no number.
-- On with no number set: the estimate, and keep watching.
-- A number set that costs 5% or more than the estimate: switch or keep watching, for
-  the user to choose. Under 5% change nothing, as the cost steps with the compaction
-  count and a gap that small can be one step.
-
-With a number set, or with 30 or more compactions, an estimate under 200K is raised to
-200K and the report shows the estimate. The floor is a choice: the cost does not price
-what a compaction loses, so a lowest cost that early is not a reason to compact that
-often. With no number set the estimate stands as it is, as the advice is to keep watching.
+- Each lowest point, to 10K, a 5K exactly to the even ten (245K is 240K, 255K is 260K), and never below
+  200K: the global and each model's alike.
+- A model at or below the global follows it and gets no `modelSettings` of its own: the formula leans
+  low, its rework only partly seen.
+- Auto-compact off: enable it first. No session of a known model: no number.
+- The global and each model's window already in force: no change.
 
 ## What it leaves out
 
-- It prices one context's worth of work. Most sessions end sooner and never reach
-  the trigger, and for those nothing changes.
-- Cache expiry. A 1h cache write that expires is written again in full, which
-  favours neither side clearly and is not priced.
-- What a compaction costs in lost context. It is not money and is not priced, so
-  a trigger well below the lowest cost is not recommended by this model alone.
-- Prices of other models.
+- What a compaction costs in lost context, beyond the files read again with Read.
+- How long a session is: the formula takes one that goes on, so a window over a session's whole length
+  is priced as if it went on.
+- Idle and manual compactions, and a cache that expires.
 
 ## Claude Code mechanics (verified on 2.1.309)
 
@@ -160,12 +91,9 @@ often. With no number set the estimate stands as it is, as the advice is to keep
   `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env, then `modelSettings.<model>`, then the
   top-level setting, then the model default.
 - `/context` shows an Autocompact buffer of 33k at both 249k and 300k windows, so
-  compaction fires at `window − 33000`. The script's setting adds it. It is read
-  from `/context`: no threshold compaction in the logs has confirmed the firing
-  point yet.
+  compaction fires at `window − 33000`.
 - `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`: `/context` shows the same 33k buffer at 50% and
-  87%, so it either no longer moves the trigger or is not shown. The script counts
-  it as `min(window × pct ÷ 100, window − 33000)`, the lower of the two.
+  87%, so it either no longer moves the trigger or is not shown. `apply.sh` leaves it and warns of it.
 - `DISABLE_AUTO_COMPACT` removes the buffer from `/context`, as auto-compact is off.
   With nothing set, the window of a 1M model is 1M.
 - `precomputeCompactionEnabled` (default on) writes the summary in the
@@ -174,9 +102,5 @@ often. With no number set the estimate stands as it is, as the advice is to keep
   about 54 minutes is compacted before its 1h cache expires.
   `"idleCompaction": false` disables it, `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`
   changes the minimum. It ignores the window.
-- `compactMetadata.trigger` in the jsonl records `auto` for both idle and
-  threshold compactions; the idle gap before the entry tells them apart.
-- `preTokens` is the last request's whole context plus its output (exact in 4 of 9
-  compactions checked, within about 2k in the rest), so it holds the initial context.
-- `postTokens` is the summary alone. The first request after the compaction shows
-  what the context really restarts from.
+- `compactMetadata.postTokens` is the conversation after a compaction (summary, files attached again,
+  messages kept), not the summary alone; the compaction's own request is not in the log.

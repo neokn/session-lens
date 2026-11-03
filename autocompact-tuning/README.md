@@ -4,99 +4,62 @@ Says what `autoCompactWindow` fits a person's own usage. Nothing here takes a tu
 model's or any room in its context: the mod runs these scripts, and so can a person.
 
 ```bash
-bash autocompact-tuning/scripts/report.sh                # writes the data, opens the page, prints the setting
-bash autocompact-tuning/scripts/recommend.sh --settings  # what to set as JSON, overall and by model
-bash autocompact-tuning/scripts/recommend.sh             # the full report as text, 30, 7 and 1 days
+bash autocompact-tuning/scripts/recommend.sh             # what to set, as JSON: the global, and each model
 bash autocompact-tuning/scripts/apply.sh --help          # writes ~/.claude/settings.json
 ```
 
-In a session, `Auto-compact Report` at the foot of the pane runs the first. `/autocompact-tuning`
-runs it too, then asks in a dialog whether to write the setting, globally or by model, and
-runs `apply.sh` on the answer. `hooks/digest/autocompact.ts` holds what it says and offers.
+In a session, `/autocompact-tuning`, or `Auto Compact Tuning` at the foot of the pane, runs the
+first, then asks in a dialog what to write: the global setting with a setting for each model above it,
+every other model then following the global; the global alone; or what is typed under Other. It runs
+`apply.sh` on the answer. With no session new or gone on since the last run, and the settings and the
+script as they were, it reads no logs: `fingerprint.sh` says what counts, and `--fresh` reads them
+anyway. When it does read, `rows/` under `~/.claude/autocompact-tuning/` holds what each log came to,
+how far it was read and how the reading stood, so only what was added since is read, and what is past
+30 days or deleted is dropped from it. `hooks/digest/autocompact.ts` holds what it says and offers.
 
-`autoCompactWindow` takes tokens, 100000–1000000, and the reports write it in K. Precedence:
+`autoCompactWindow` takes tokens, 100000–1000000, and the dialog writes it in K. Precedence:
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, then `modelSettings.<model>`, then the top-level setting.
 `apply.sh` leaves `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` where it is and warns of it: `/context`
 does not show it, so whether it still moves the trigger is unconfirmed.
-
-## The report
-
-`assets/chart.html` never changes. `report.sh` writes the data beside it, as
-`report.js` for a page opened from `file://` and `report.json` for a served one, and
-the page computes every figure in the browser. It follows the browser's language, zh or else English, and has a switch. It needs bash and jq, and no server.
 
 ## What the script counts
 
 - One request = one API call = one assistant `message.id` (streamed entries
   repeat the id and are counted once).
-- Usage is the main session only. Subagents run in their own context and live under
-  `<session>/subagents/`; they do not fill the main window. Their compactions count
-  toward the ratio and the size.
-- Compaction is left out of usage: the first request after a compaction (the
-  summary write) is never counted as input or output.
-- **New input** = `input_tokens + cache_creation_input_tokens`. Output of request
-  *i* becomes cached input of request *i+1*, so it is already inside it.
-  *With initial* counts each session's first request (the start context);
-  *without* leaves it out.
-- **Context sent** = new input + `cache_read_input_tokens`, the whole context a
-  request carries. *Without initial* subtracts that session's start context.
-- **Pure ratio** = (context before − that session's initial context) ÷ summary:
-  neither side holds the initial context, which is never compacted. **Ratio with
-  initial** = context before ÷ the first request after the compaction: both sides
-  hold it. `preTokens` is the last request's whole context plus its output.
-- **Kind**: `manual` from the record; `idle` when `auto` came after 50+ idle
-  minutes above 200k; else `threshold`. The record marks idle and threshold both
-  `auto`, so that split is inferred.
-- **Ratio or fixed size**: each compaction's ratio and size, subagents included, give a
-  normal value in log space, outliers out, and the steadier one is what the cost assumes. Under 30 compactions the
-  report warns and says what to do, as below; no ratio is assumed.
-- Over 30 days the cost leans toward the last 24 hours by partial pooling, 50% at most;
-  `references/model.md` has how. The `last day` line shows the weights.
-- **Normal request**: one request's input and output, the pair dropped when either is
-  more than 2 deviations out in log space, then `exp(mean)` of what is left, so their
-  ratio is the normal in/out ratio. It says what one request is. The cost then adds it
-  up, so big requests left out make the context grow slower there than it really does.
+- Main sessions and subagents both, each subagent in the mode `subagent`; a main session is `claude -p`
+  when its entrypoint is the SDK's, else interactive.
+- The first request after a compaction is the summary write: it gives what the compaction left, and is
+  no turn of the work.
+- **Context sent** = `input_tokens + cache_creation_input_tokens + cache_read_input_tokens`, the whole
+  context a request carries.
 
 ## Where the setting comes from
 
-The trigger with the lowest total cost over the same work, the requests it takes
-the context to reach 1M without compacting at this user's input and output, at the
-Sonnet 5.5, Opus 5.5 and Fable 5.1 prices, with what the logs show a compaction leaves behind. The single setting weighs those models by this user's requests. It adds
-the 33k buffer, as auto-compact fires that far below `autoCompactWindow`. The `setting` line prices one usage at each model; the page's per-model table uses each
-model's own usage, so trust that table for per-model settings. The last line is for the
-initial context of the latest five sessions, so it can differ a
-little from the 30d `setting` line, which keeps what the logs measured. The page's
-single-model and per-project views use the same rules over their own records. Read
-[references/model.md](references/model.md) before changing a constant or when
-asked how good the number is.
+A formula, from the initial context, how fast the context grows, the files read again after a
+compaction, what a compaction writes out and writes again, and the model's prices; the compact buffer,
+33K, is taken as what a compaction leaves. Each mode of a model gives a cost curve, the modes are summed
+into the model's and the models into the global's, and each lowest point is rounded to 10K, never below 200K. Nothing
+needs a compaction on record: a person who has never compacted gets a number. Read
+[references/model.md](references/model.md) before changing a constant or when asked how good the number is.
 
 ## What it advises
-
-The last lines of the text report, the top of the page and the command say the same:
 
 | State | Say |
 |---|---|
 | Auto-compact off | Enable it first |
-| No compactions yet | Nothing measured to compute from: keep watching |
-| Under 30, on, no number set | The estimate, and keep watching |
-| Under 30, number set, in force costs 5% or more | Switch to the estimate, or change nothing and keep watching: their choice |
-| Under 30, number set, within 5% | Change nothing, keep watching |
-| 30 or more | The recommendation |
-
-Where a change is on the table (a number set, or 30 or more), an estimate under 200K is
-raised to 200K, and the report says so.
+| No session of a known model in the last 30 days | No number: keep watching |
+| The global and every model's own window already in force | No change |
+| Otherwise | The global, and a setting for each model above it; every other model follows the global |
 
 It gives the setting, never the point it fires at: the buffer between them is Claude Code's
-and can change, so the reports leave it out.
+and can change.
 
 ## Common mistakes
 
 | Mistake | Effect |
 |---|---|
-| Counting subagent requests | Inflates request count, deflates new input |
-| Using per-turn totals as new input | A turn is many requests; it is per request |
-| Quoting the pure ratio as how much the context shrinks | The context left behind also holds the initial context; use the ratio with initial |
-| Quoting a compression ratio as a property of the user | It grows with how late they compact, as the summary stays about the same size |
+| Using a request's new input as the context's growth | A cache written again counts the whole context as new |
+| Taking `postTokens` for the summary | It is the conversation after the compaction, files attached again included |
 | Reading `autoCompactWindow` as the trigger | It fires 33k below it |
 | Expecting the window to be the only trigger | Idle compaction (200k+ tokens, idle about 54 min) runs on its own; `"idleCompaction": false` turns it off |
 | Reading the number as a share of the window | It is a token count; Claude Code clamps it to the model's context, so a 200k model gets min(N, 200k) |
