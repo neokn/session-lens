@@ -1,6 +1,6 @@
 {
   "name": "session-lens",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "A /session-lens pane for Claude Code: what fills the context window, what each turn cost, and every tool, MCP server and skill each agent used, with a live event log.",
   "author": {
     "name": "Neo Kusanagi",

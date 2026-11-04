@@ -13,7 +13,7 @@ import { liveReqsOf } from './digest/turns'
 import { usesOf } from './digest/uses'
 import { bashEnded, bashStarted } from './record/children'
 import { readMainShape, readMcpInstructions, readPrompt, readRestart } from './record/transcript'
-import { autocompactReport, autocompactTuning, checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
+import { askAutocompactTuning, checkReport, cycleState, drawn, eased, opened, openInRecord, refresh, readVersion, report, REPORT_REPO, REREAD_AFTER, setTurn, showcase, tick } from './refresh'
 import { ledgerKey, measuredOf } from './state'
 import { Fold } from './views/atoms/Fold'
 import { cut, fit, fmtTime, io, IO_W, k, K_W, left, money, prompt, shortModel, span, tinyModel, toolLabel, typeOf, waffle, width } from './views/layout'
@@ -82,6 +82,7 @@ const memoryText = atom({ plugin: 'session-lens', key: 'memoryText' } as const, 
 const mcpInstructions = atom({ plugin: 'session-lens', key: 'mcpInstructions' } as const, null)
 const effortAll = atom({ plugin: 'session-lens', key: 'effortAll' } as const, null)
 const effortScope = atom({ plugin: 'session-lens', key: 'effortScope' } as const, 'all')
+const tuningProgress = atom({ plugin: 'session-lens', key: 'tuningProgress' } as const, null)
 
 const PANE = 'session-lens'
 
@@ -137,6 +138,7 @@ async function pageState($: EngineInterface) {
     instructionsOf: read($, mcpInstructions),
     effortOf: read($, effortAll),
     scopeOf: read($, effortScope),
+    tuningOf: read($, tuningProgress),
   }
   const values = await Promise.all(Object.values(reads))
   return Object.fromEntries(Object.keys(reads).map((k, n) => [k, values[n]])) as { [K in keyof typeof reads]: Awaited<(typeof reads)[K]> }
@@ -156,12 +158,17 @@ export const register: Register = on => {
     })
     await $.command.register({
       name: 'autocompact-tuning',
-      description: 'Open the auto-compact report and offer to write the setting it comes to',
+      description: 'Compute the auto-compact setting from your usage and offer to write it',
+      argumentHint: '[--fresh]',
     })
     return next(e)
   })
 
-  on('command.run', { command: 'autocompact-tuning' }, async $ => ({ text: await autocompactTuning($) }))
+  on('command.run', { command: 'autocompact-tuning' }, async ($, e) => {
+    // A toast, not the command's text: what a command prints stays in the conversation, and none of this is for the model.
+    await askAutocompactTuning($, e.args.trim() === '--fresh')
+    return {}
+  })
 
   on('command.run', { command: 'session-lens' }, async $ => {
     await followTheme($)
@@ -285,7 +292,7 @@ export const register: Register = on => {
     // One time for the whole drawing: what is live counts to it.
     const now = await $.clock.now()
     try {
-      const { snap, sk, runs, who, failed, shellsAll, stored, open, hist, mine, turnList, log, filter, pageOf, compacted, restartOf, fresh, promptOf, counted, pricedAt, proc, settingsAll, shownOf, shapeOf, memOf, instructionsOf, effortOf, scopeOf } = await pageState($)
+      const { snap, sk, runs, who, failed, shellsAll, stored, open, hist, mine, turnList, log, filter, pageOf, compacted, restartOf, fresh, promptOf, counted, pricedAt, proc, settingsAll, shownOf, shapeOf, memOf, instructionsOf, effortOf, scopeOf , tuningOf } = await pageState($)
       // Older saved shapes lack the newer fields.
       const talk: Chat = { ...noChat(), ...(stored as Partial<Chat>) }
 
@@ -1390,7 +1397,7 @@ export const register: Register = on => {
           {logBlock}
           {/* The version at the left, so which copy runs can be seen; pressed, it opens the tabs of design tokens and UI components. Beside it the
               theme drawn, which a press switches. The session report is a turn of the model's: it costs tokens, so it asks once more
-              before it runs. Left of it the auto-compact report, which costs none and so runs at the press. Seldom wanted, they sit
+              before it runs. Left of it auto-compact tuning, which costs none and so runs at the press. Seldom wanted, they sit
               apart from every block, under the last, at the right, and dim. */}
           <Box flexDirection="row" justifyContent="space-between" width={W}>
             <Box flexDirection="row" gap={SPACE.gap}>
@@ -1398,8 +1405,8 @@ export const register: Register = on => {
               <Button plain key="node-theme" onPress={() => switchTheme($)}><Text color={T.text.muted}>{`${G.theme} ${drawnTheme}`}</Text></Button>
             </Box>
             <Box flexDirection="row" gap={SPACE.gap}>
-              <Button plain key="node-autocompact" onPress={() => autocompactReport($)}>
-                <Text color={T.text.muted}>Auto-compact Report</Text>
+              <Button plain key="node-autocompact" onPress={() => askAutocompactTuning($)}>
+                <Text color={T.text.muted}>{tuningOf ? `Auto Compact Tuning · ${tuningOf}` : 'Auto Compact Tuning'}</Text>
               </Button>
               {isOk ? (
                 /* Installed since the last reading, the plugin is found as the fold opens. */

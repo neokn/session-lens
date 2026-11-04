@@ -2,11 +2,11 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface } from 'claude-code'
 
 import type { Snapshot } from '../types'
-import { tuningAdvice } from './digest/autocompact'
+import { tuningAdvice, tuningLabel, typedTuning, type TuningStage } from './digest/autocompact'
 import { effortKey, effortSamplesOf } from './digest/effort'
 import { emptyRun, noChat, same } from './digest/record'
 import { clean, cleaned, parsed } from './digest/text'
-import { openTuningReport, readTuning, writeTuning } from './record/autocompact'
+import { readTuning, writeTuning } from './record/autocompact'
 import { linkSession, readHistory } from './record/transcript'
 import { ledgerKey, measuredOf, type Turn } from './state'
 
@@ -30,6 +30,7 @@ const compactions = atom({ plugin: 'session-lens', key: 'compactions' } as const
 const history = atom({ plugin: 'session-lens', key: 'history' } as const, { status: 'pending', detail: '' })
 const readings = atom({ plugin: 'session-lens', key: 'readings' } as const, [])
 const priced = atom({ plugin: 'session-lens', key: 'priced' } as const, [])
+const tuningProgress = atom({ plugin: 'session-lens', key: 'tuningProgress' } as const, null)
 const turnState = atom({ plugin: 'session-lens', key: 'turnState' } as const, { isBusy: false, hasHeardTurn: false, busySince: 0, busyText: '' } as Turn)
 
 // The read cycle: when the record is read again, what the reading stores, and the tickers that redraw the pane while
@@ -223,32 +224,66 @@ export async function report($: EngineInterface) {
   }
 }
 
-// The auto-compact report needs no model: its script reads the logs, writes the data and opens the page.
-export async function autocompactReport($: EngineInterface) {
-  $.ui.toast('Auto-compact report: reading the logs')
-  try {
-    const failure = await openTuningReport($)
-    $.ui.toast(`Auto-compact report: ${failure ?? 'opened in your browser'}`)
-  } catch (err) {
-    $.ui.toast(`Auto-compact report: ${err instanceof Error ? err.message : String(err)}`)
-  }
+// The button and the command both: what the formula comes to, and what to write. No turn of the model's, and nothing in its
+// context: what it comes to is a toast. How far it has got shows on the button and in the status line, the seconds counting so
+// that a slow run can be told from a stuck one.
+const tuning = { isRunning: false, seconds: 0, stage: { kind: 'computing' } as TuningStage }
+const tuningText = () => tuningLabel(tuning.stage, tuning.seconds)
+
+async function showTuning($: EngineInterface, text: string | null, isRunning = true) {
+  $.ui.status(isRunning && text ? `Auto Compact Tuning · ${text}` : undefined)
+  await update($, tuningProgress, () => text)
 }
 
-// /autocompact-tuning: the report, what it comes to, and whether to write it. No turn of the model's, and nothing in its context.
-export async function autocompactTuning($: EngineInterface) {
+export async function askAutocompactTuning($: EngineInterface, isFresh = false) {
+  if (tuning.isRunning) {
+    $.ui.toast('Auto Compact Tuning: already running')
+    return
+  }
+  tuning.isRunning = true
+  tuning.seconds = 0
+  tuning.stage = { kind: 'computing' }
+  const onStage = (stage: TuningStage) => {
+    tuning.stage = stage
+    void showTuning($, tuningText())
+  }
+  await showTuning($, tuningText())
+  const clock = $.clock.every(1000, () => {
+    tuning.seconds += 1
+    if (tuning.stage.kind !== 'asking') void showTuning($, tuningText())
+  })
+  let failure: string | null = null
   try {
-    $.ui.toast('Auto-compact tuning: reading the logs')
-    const failure = await openTuningReport($)
-    if (failure) return `Auto-compact tuning: ${failure}`
-    const { lines, question, options } = tuningAdvice(await readTuning($))
-    const said = lines.join('\n')
-    if (!question) return said
-    // Dismissed, or under -p with no one to ask, it rejects; free text under Other names no option.
-    const picked = await $.ui.ask(question, { header: 'Setting', options: options.map(o => o.label) }).catch(() => null)
-    const args = options.find(o => o.label === picked)?.args
-    return `${said}\n${args ? await writeTuning($, args) : 'Nothing was written.'}`
+    const { lines, question, options } = tuningAdvice(await readTuning($, isFresh, onStage))
+    const said = lines.join(' ')
+    if (!question) {
+      $.ui.toast(said)
+      return
+    }
+    onStage({ kind: 'asking' })
+    // What it comes to goes in the question: the choice is made there. Dismissed, or under -p with no one to ask, it rejects; what
+    // is typed under Other names no option.
+    const picked = await $.ui.ask(`${said} ${question}`, { header: 'Setting', options: options.map(o => o.label) }).catch(() => null)
+    const chosen = options.find(o => o.label === picked)
+    const args = chosen ? chosen.args : picked === null ? null : typedTuning(picked)
+    if (picked !== null && !chosen && !args) {
+      $.ui.toast(`Nothing was written: "${picked}" does not read as a setting. Try "300K" or "global 300K, opus 250K", from 100K to 1000K.`)
+      return
+    }
+    if (!args) {
+      $.ui.toast('Nothing was written.')
+      return
+    }
+    onStage({ kind: 'writing' })
+    $.ui.toast(await writeTuning($, args, onStage))
   } catch (err) {
-    return `Auto-compact tuning: ${err instanceof Error ? err.message : String(err)}`
+    failure = err instanceof Error ? err.message : String(err)
+  } finally {
+    clock.cancel()
+    tuning.isRunning = false
+    if (failure) $.ui.toast(`Auto Compact Tuning: ${failure}`)
+    // What went wrong stays on the button until the next press.
+    await showTuning($, failure ? `failed: ${failure.split('\n')[0]}` : null, false)
   }
 }
 

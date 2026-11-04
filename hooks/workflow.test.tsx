@@ -48,8 +48,11 @@ let scripts: string[][] = []
 let toasts: string[] = []
 // What the auto-compact button started, and what its script answers.
 let reportRuns: string[][] = []
+let reportEnvs: Record<string, string>[] = []
 let reportAnswer = { exitCode: 0, stderr: '' }
 let tuningAnswer = ''
+let reportSays: string[] = []
+let reportHeld = { promise: Promise.resolve() as Promise<void>, release: () => undefined as void }
 let kept: Record<string, unknown> = {}
 
 // One more turn after the workflow's, its prompt typed `n` hours in, answered with a line.
@@ -85,6 +88,8 @@ async function mountLens([$, on]: Parameters<TestBody>, run?: { status: string; 
   on('command.list', () => ({ value: installed.map(name => ({ name, description: '', source: 'plugin' })) }))
   reportRuns = []
   reportAnswer = { exitCode: 0, stderr: '' }
+  reportSays = []
+  reportHeld = { promise: Promise.resolve(), release: () => undefined }
   on('ui.toast', (_, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -119,12 +124,19 @@ async function mountLens([$, on]: Parameters<TestBody>, run?: { status: string; 
     const a = /agent-(\w\d+)/.exec(e.path)?.[1] ?? '?'
     return { value: line({ agentType: 'workflow-subagent', description: `sweep:${a}`, workflowPhase: 'Sweep', spawnDepth: 1 }) }
   })
+  on('process.spawn', async function* (_, e) {
+    const script = e.argv[1] ?? ''
+    if (!/\/(recommend|apply)\.sh$/.test(script)) throw new Error('no such program')
+    reportRuns.push([...e.argv])
+    reportEnvs.push({ ...(e.env ?? {}) })
+    for (const text of script.endsWith('/recommend.sh') ? reportSays : []) yield { stream: 'stderr' as const, text }
+    await reportHeld.promise
+    if (reportAnswer.stderr) yield { stream: 'stderr' as const, text: reportAnswer.stderr }
+    const stdout = script.endsWith('/recommend.sh') ? tuningAnswer : script.endsWith('/apply.sh') ? 'wrote it' : ''
+    if (stdout) yield { stream: 'stdout' as const, text: stdout }
+    return { value: { code: reportAnswer.exitCode, signal: null } }
+  })
   on('process.run', (_, e) => {
-    if (e.argv[1]?.endsWith('/report.sh') || e.argv[1]?.endsWith('/recommend.sh') || e.argv[1]?.endsWith('/apply.sh')) {
-      reportRuns.push([...e.argv])
-      const stdout = e.argv[1].endsWith('/recommend.sh') ? tuningAnswer : e.argv[1].endsWith('/apply.sh') ? 'wrote it' : ''
-      return { value: { ...reportAnswer, isStdoutTruncated: false, isStderrTruncated: false, stdout } }
-    }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('ln "')) {
       scripts.push([...e.argv])
       return { value: { exitCode: 0, stderr: '', isStdoutTruncated: false, isStderrTruncated: false, stdout: '' } }
@@ -277,62 +289,102 @@ test('every list unfolds ten at first, then thirty at a time', async (...args) =
   await ui.unmount()
 })
 
-// The auto-compact report sits left of the session report and runs at the press, with no turn of the model's.
-test('the auto-compact report runs its script at the press, left of the session report', async (...args) => {
-  const [$] = args
-  const ui = await mountLens(args)
-  const press = (key: string) => $.ui.press({ plugin: 'session-lens', key: `node-${key}`, requestId: 'session-lens', surface: 'terminal' })
-  // The keys in the order they are drawn.
-  const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key)
-  expect(keys.indexOf('node-autocompact')).toBeGreaterThan(-1)
-  expect(keys.indexOf('node-autocompact')).toBe(keys.indexOf('node-report') - 1)
-  await press('autocompact')
-  await clock.advance(1)
-  expect(reportRuns).toEqual([['bash', expect.stringMatching(/\/autocompact-tuning\/scripts\/report\.sh$/), '--no-summary']])
-  expect(toasts.join()).toContain('opened in your browser')
-  expect(ran).toEqual([])
-  // It says why when the script stops short.
-  toasts = []
-  reportAnswer = { exitCode: 2, stderr: 'recommend.sh: jq not found\n' }
-  await press('autocompact')
-  await clock.advance(1)
-  expect(toasts.join()).toContain('jq not found')
-  expect(toasts.join()).not.toContain('opened in your browser')
-  await ui.unmount()
-})
-
-// /autocompact-tuning opens the report and asks, with no turn of the model's; only the choice is written.
+// /autocompact-tuning asks what the formula comes to, with no turn of the model's; only the choice is written.
 test('/autocompact-tuning writes only what the dialog chose', async (...args) => {
   const [$, on] = args
-  let answer = 'Global: 264K (Recommended)'
+  let answer = 'Global: 240K, and Opus 270K (others use Global) (Recommended)'
   const asked: string[][] = []
+  const questions: string[] = []
   on('tool.call', { tool: 'AskUserQuestion' }, (_, e) => {
     const q = e.questions[0]
+    questions.push(q?.question ?? '')
     asked.push(q?.options.map(o => o.label) ?? [])
     return { result: { questions: e.questions, answers: { [q?.question ?? '']: answer } } }
   })
   const ui = await mountLens(args)
-  const row = { model: '', id: null, compactions: 40, tooFew: false, window: 264000, lowest: 264000, floored: false, costsMore: 58, hasNumber: true }
-  tuningAnswer = line({ current: { isOff: false, pct: null }, overall: row, byModel: [{ ...row, model: 'opus', id: 'claude-opus-5-5', window: 267000 }] })
+  tuningAnswer = line({
+    current: { isOff: false, pct: null, window: null, models: {} },
+    global: { window: 240000, computed: 244000 },
+    byModel: [{ model: 'opus', id: 'claude-opus-5-5', computed: 271000, own: 270000, window: 270000, follows: false }, { model: 'sonnet', id: 'claude-sonnet-5-5', computed: 201000, own: 200000, window: 240000, follows: true }],
+  })
   const tune = () => $.command.run({ command: 'autocompact-tuning', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
   const scripts = () => reportRuns.map(a => [a[1]?.split('/').pop(), ...a.slice(2)])
   const written = await tune()
-  expect(scripts()).toEqual([['report.sh', '--no-summary'], ['recommend.sh', '--settings'], ['apply.sh', '--global', '264000']])
-  expect(asked[0]).toEqual(['Global: 264K (Recommended)', 'By model: Opus 267K', 'Change nothing'])
-  expect(written.text).toContain('wrote it')
+  // Nothing of it stays in the conversation: what it comes to is a toast.
+  expect(written.text).toBeUndefined()
+  expect(written.context).toBeUndefined()
+  // No page opens: the formula runs, and the dialog asks.
+  expect(scripts()).toEqual([['recommend.sh', '--settings'], ['apply.sh', '--global', '240000', '--clear-other-models', '--model', 'claude-opus-5-5=270000']])
+  expect(asked[0]).toEqual(['Global: 240K, and Opus 270K (others use Global) (Recommended)', 'Global: 240K only'])
+  // The choice is made with what it comes to in front of it.
+  expect(questions[0]).toContain('Recommended: autoCompactWindow 240K (computed 244K)')
+  expect(toasts.join()).toContain('wrote it')
+  expect(asked.length).toBe(1)
   expect(ran.filter(r => r.command !== 'autocompact-tuning')).toEqual([])
   reportRuns = []
-  answer = 'By model: Opus 267K'
+  answer = 'Global: 240K only'
   await tune()
-  expect(scripts().at(-1)).toEqual(['apply.sh', '--model', 'claude-opus-5-5=267000'])
-  // Change nothing, or free text under Other, writes nothing.
-  for (const other of ['Change nothing', 'something else']) {
-    reportRuns = []
-    answer = other
-    const left = await tune()
-    expect(scripts().some(a => a[0] === 'apply.sh')).toBe(false)
-    expect(left.text).toContain('Nothing was written')
-  }
+  expect(scripts().at(-1)).toEqual(['apply.sh', '--global', '240000'])
+  // What is typed under Other is written when it reads as a setting, and nothing is when it does not.
+  reportRuns = []
+  answer = 'opus 250K'
+  await tune()
+  expect(scripts().at(-1)).toEqual(['apply.sh', '--model', 'claude-opus-5-5=250000'])
+  reportRuns = []
+  toasts = []
+  answer = 'something else'
+  await tune()
+  expect(scripts().some(a => a[0] === 'apply.sh')).toBe(false)
+  expect(toasts.join()).toContain('does not read as a setting')
+  // The button at the foot of the pane, left of the session report, is the same command, dialog and all.
+  const keys = (await ui.findAll({ type: 'Button' })).map(b => b.key)
+  expect(keys.indexOf('node-autocompact')).toBeGreaterThan(-1)
+  expect(keys.indexOf('node-autocompact')).toBe(keys.indexOf('node-report') - 1)
+  expect((await ui.find({ key: 'node-autocompact' }))?.text).toBe('Auto Compact Tuning')
+  reportRuns = []
+  asked.length = 0
+  toasts = []
+  answer = 'Global: 240K, and Opus 270K (others use Global) (Recommended)'
+  await $.ui.press({ plugin: 'session-lens', key: 'node-autocompact', requestId: 'session-lens', surface: 'terminal' })
+  await clock.advance(1)
+  expect(asked.length).toBe(1)
+  expect(scripts().at(-1)).toEqual(['apply.sh', '--global', '240000', '--clear-other-models', '--model', 'claude-opus-5-5=270000'])
+  expect(toasts.join()).toContain('wrote it')
+  // Asked to, it reads the logs even with no new session.
+  reportRuns = []
+  answer = 'Change nothing'
+  await $.command.run({ command: 'autocompact-tuning', args: '--fresh', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  expect(scripts()[0]).toEqual(['recommend.sh', '--settings'])
+  expect(reportEnvs.at(-1)?.AUTOCOMPACT_FRESH).toBe('1')
+  // How far it has got shows on the button with the seconds counting; a second press starts no second run, and it clears at the end.
+  let release = () => undefined as void
+  reportHeld = { promise: new Promise<void>(r => { release = r }), release: () => undefined }
+  reportSays = ['progress reading 42 100\n']
+  reportRuns = []
+  toasts = []
+  answer = 'Change nothing'
+  const pressed = $.ui.press({ plugin: 'session-lens', key: 'node-autocompact', requestId: 'session-lens', surface: 'terminal' })
+  await clock.advance(2000)
+  expect((await ui.find({ key: 'node-autocompact' }))?.text).toMatch(/^Auto Compact Tuning · reading 42% · [12]s$/)
+  await $.ui.press({ plugin: 'session-lens', key: 'node-autocompact', requestId: 'session-lens', surface: 'terminal' })
+  expect(toasts.join()).toContain('already running')
+  expect(reportRuns.length).toBe(1)
+  release()
+  await pressed
+  await clock.advance(1)
+  expect((await ui.find({ key: 'node-autocompact' }))?.text).toBe('Auto Compact Tuning')
+  reportSays = []
+  reportHeld = { promise: Promise.resolve(), release: () => undefined }
+  // A script that stops short says why, and nothing is asked.
+  reportRuns = []
+  asked.length = 0
+  reportAnswer = { exitCode: 2, stderr: 'recommend.sh: jq not found\n' }
+  toasts = []
+  await tune()
+  expect(toasts.join()).toContain('jq not found')
+  expect(asked).toEqual([])
+  await clock.advance(1)
+  expect((await ui.find({ key: 'node-autocompact' }))?.text).toBe('Auto Compact Tuning · failed: recommend.sh: jq not found')
   await ui.unmount()
 })
 

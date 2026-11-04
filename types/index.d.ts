@@ -310,6 +310,8 @@ declare module 'claude-code' {
       effortAll: { status: 'pending' | 'ok' | 'error'; bySession: Record<string, { model: string; effort: string; calls: number; steps: number }[]> } | null
       /** Whether the effort page draws every session's turns or this one's. */
       effortScope: 'all' | 'this'
+      /** How far auto-compact tuning has got, or what stopped it; null when it is not running. */
+      tuningProgress: string | null
       /** `init:<category>` is the page of one part of main's Init, by the name /context gives it. */
       page: 'turns' | 'log' | 'tokens' | 'components' | 'effort' | `cmp:${'log' | 'main'}:${string}` | `init:${string}` | null
     }
