@@ -124,32 +124,3 @@ export function stackCells(col: { reqs: number; calls: number }, max: number, ro
     return eighths === 0 ? null : { eighths, split: Math.max(0, Math.min(eighths, reqH - foot)) }
   })
 }
-
-// A stretch something ran: a turn of main's, a subagent or `claude -p` child, a background shell.
-export type Busy = { from: number; to: number }
-
-/** How long something ran, and the longest run of it with no idle gap in it: the union of every stretch, so two that
- * overlap count once and two that touch make one run. The session's idle is the Timeline's span less `total`, which the
- * page leaves to the reader. */
-export function workedOf(busy: Busy[]): { total: number; longest: number } {
-  const runs = busy.filter(b => !Number.isNaN(b.from) && !Number.isNaN(b.to)).sort((p, q) => p.from - q.from)
-  let total = 0
-  let longest = 0
-  let from: number | undefined
-  let end: number | undefined
-  const close = () => {
-    if (from === undefined || end === undefined) return
-    total += end - from
-    longest = Math.max(longest, end - from)
-  }
-  for (const b of runs) {
-    const to = Math.max(b.from, b.to)
-    if (end === undefined || b.from > end) {
-      close()
-      from = b.from
-      end = to
-    } else end = Math.max(end, to)
-  }
-  close()
-  return { total, longest }
-}

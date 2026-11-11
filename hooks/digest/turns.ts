@@ -216,7 +216,7 @@ export function timelineOf(rows: Row[]): Timeline | undefined {
 
 export function turnsOf(rows: Row[], agents: Record<string, AgentRun>, metas: Record<string, Meta>, spans: Record<string, Span>): TurnRow[] {
   type Pending = { ts?: string | null; sent?: string | null; u: Step; kinds: string[] }
-  type Acc = { preview: string; first?: string | null; last?: string | null; sent?: string | null; waiting?: string | null; steps: Step[]; usd: number; useIds: Set<string>; agents: string[]; reqs: Pending[]; did: Record<string, number>; model?: string; effort?: string; calls: (Counted & { ef?: string; cut: number })[]; uses?: Set<string> }
+  type Acc = { preview: string; first?: string | null; last?: string | null; sent?: string | null; waiting?: string | null; steps: Step[]; usd: number; useIds: Set<string>; agents: string[]; reqs: Pending[]; did: Record<string, number>; model?: string; effort?: string; calls: (Counted & { ef?: string; cut: number })[]; uses?: Set<string>; split?: boolean; asked?: string[] }
   const accs: Acc[] = []
   const seen = new Set<string>()
   const pending = new Map<string, Pending>()
@@ -243,6 +243,8 @@ export function turnsOf(rows: Row[], agents: Record<string, AgentRun>, metas: Re
       accs.push(cur)
       continue
     }
+    // Sent mid-turn: the person was there, though the message joins the turn.
+    if (cur && r.t === 'attachment' && r.qp && r.ts && !r.qp.x.trim().startsWith('<')) (cur.asked ??= []).push(r.ts)
     if (cur && r.t === 'user') {
       const res = [...r.c].reverse().find(b => b.k === 'res')
       if (res) input = `${toolOf.get(res.id ?? '') ?? 'tool'} → ${res.r || '(empty)'}`
@@ -267,7 +269,7 @@ export function turnsOf(rows: Row[], agents: Record<string, AgentRun>, metas: Re
       // Another effort does not.
       if (cur.steps.length > 0 && !isAlike(cur.model, model)) {
         cur.last = after
-        cur = { preview: input ?? cur.preview, first: sent ?? r.ts, last: r.ts, sent, steps: [], usd: 0, useIds: new Set(), agents: [], reqs: [], did: {}, calls: [] }
+        cur = { preview: input ?? cur.preview, first: sent ?? r.ts, last: r.ts, sent, steps: [], usd: 0, useIds: new Set(), agents: [], reqs: [], did: {}, calls: [], split: true }
         accs.push(cur)
       }
       // A turn runs at what its first request named: a model or effort named only later fills in what was unknown.
@@ -351,7 +353,7 @@ export function turnsOf(rows: Row[], agents: Record<string, AgentRun>, metas: Re
     const prev = a.model ? [...out].reverse().find(t => t.model) : undefined
     // The newest turn is still going while a request waits for its reply or a tool has not come back.
     const isOpen = ai === accs.length - 1 && (a.waiting !== undefined && a.waiting !== null || (a.uses?.size ?? 0) > 0)
-    out.push({ n: out.length + 1, preview: a.preview, usd, steps, wrote, read, cacheRead, subCount: a.agents.length, subSteps, subRead, subWrote, ms, startedAt: a.first ?? undefined, idleMs, ctx: end ? end.i + end.cr + end.cw : undefined, endedAt: a.last ?? undefined, did: didOf(a), model: a.model, effort: a.effort, switched: prev !== undefined && !isSameSetting({ md: prev.model, ef: prev.effort }, { md: a.model, ef: a.effort }) ? true : undefined, calls: { steps: a.calls.length, tools: a.calls.reduce((n, c) => n + c.tools, 0), skills: a.calls.reduce((n, c) => n + c.skills, 0), mcp: a.calls.reduce((n, c) => n + c.mcp, 0), thinking: a.calls.reduce((n, c) => n + c.th, 0) }, runs: runsOf(a.calls, (x, y) => x.cut === y.cut && (!y.ef || x.ef === y.ef)).map(run => ({ effort: run.find(c => c.ef)?.ef ?? a.effort, cut: run[0]?.cut ?? 0, steps: run.length, tools: run.reduce((n, c) => n + c.tools, 0), skills: run.reduce((n, c) => n + c.skills, 0), mcp: run.reduce((n, c) => n + c.mcp, 0), thinking: run.reduce((n, c) => n + c.th, 0) })), open: isOpen ? true : undefined, reqs: reqsOf(isOpen ? { ...a, waiting: a.waiting ?? a.last } : { ...a, waiting: undefined }, agents, metas, spans) })
+    out.push({ n: out.length + 1, preview: a.preview, usd, steps, wrote, read, cacheRead, subCount: a.agents.length, subSteps, subRead, subWrote, ms, startedAt: a.first ?? undefined, idleMs, ctx: end ? end.i + end.cr + end.cw : undefined, endedAt: a.last ?? undefined, did: didOf(a), model: a.model, effort: a.effort, switched: prev !== undefined && !isSameSetting({ md: prev.model, ef: prev.effort }, { md: a.model, ef: a.effort }) ? true : undefined, split: a.split, asked: a.asked, calls: { steps: a.calls.length, tools: a.calls.reduce((n, c) => n + c.tools, 0), skills: a.calls.reduce((n, c) => n + c.skills, 0), mcp: a.calls.reduce((n, c) => n + c.mcp, 0), thinking: a.calls.reduce((n, c) => n + c.th, 0) }, runs: runsOf(a.calls, (x, y) => x.cut === y.cut && (!y.ef || x.ef === y.ef)).map(run => ({ effort: run.find(c => c.ef)?.ef ?? a.effort, cut: run[0]?.cut ?? 0, steps: run.length, tools: run.reduce((n, c) => n + c.tools, 0), skills: run.reduce((n, c) => n + c.skills, 0), mcp: run.reduce((n, c) => n + c.mcp, 0), thinking: run.reduce((n, c) => n + c.th, 0) })), open: isOpen ? true : undefined, reqs: reqsOf(isOpen ? { ...a, waiting: a.waiting ?? a.last } : { ...a, waiting: undefined }, agents, metas, spans) })
   })
   // The waterfall is drawn for the newest turns only; older ones keep their totals.
   for (const t of out.slice(0, -KEEP_REQS)) delete t.reqs

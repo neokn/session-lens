@@ -210,11 +210,12 @@ test('the pane is built from the session record on disk: session, a tree rooted 
   const text = async (re: RegExp) => (await ui.find({ type: 'Text', text: re }))?.text
 
   // SESSION: the whole session's figures, one figure a tile, the cost among them: its box keeps only the bar and the tables.
-  // Working: how long something ran, main, a subagent or a shell; the idle is the Timeline's span less it, left to the reader.
+  // Away: how long the agent ran with nobody needed, a prompt to the next time the person came in: 10s and 5s, the
+  // message sent at the second's start cutting nothing. The median, 7.5s, and the longest.
   expect(await text(/^Cost$/)).toBeTruthy()
   expect(await text(/^Idle$/)).toBeFalsy()
-  expect(await text(/^Work( \(MAX\))?$/)).toBeTruthy()
-  expect(JSON.stringify(await ui.drawn()).match(/"children":\["Work(?: \(MAX\))?"\]\},\{[^\]]*?"children":\["([^"]+)"\]/)?.[1]).toBe('15s (10s)')
+  expect(await text(/^Away( p50 \(MAX\))?$/)).toBeTruthy()
+  expect(JSON.stringify(await ui.drawn()).match(/"children":\["Away(?: p50 \(MAX\))?"\]\},\{[^\]]*?"children":\["([^"]+)"\]/)?.[1]).toBe('8s (10s)')
   // Nothing runs: no spinner beside it.
   expect(JSON.stringify(await ui.drawn())).not.toMatch(/1m45s[^⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]{0,80}[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)
   expect(await text(/^\+\S+ unpriced$|^#2 done$/)).toBeFalsy()
@@ -946,6 +947,26 @@ test('a request lies on the turn clock from when it was sent, and one in flight 
   expect((turnsOf(calling, {}, {}, {})[0]?.reqs ?? []).at(-1)?.running).toBe(true)
   const older = [...rows, { t: 'user', id: null, o: 'human', pv: 'next', ts: at(30), u: null, c: [{ k: 'text', n: 2 }] }, { t: 'assistant', id: 'd', ts: at(31), u: step, c: [] }] as typeof rows
   expect((turnsOf(older, {}, {}, {})[0]?.reqs ?? []).some(r => r.running)).toBe(false)
+})
+
+test('a turn keeps when the person came in: a notice that woke main opens none, a message sent mid-turn is kept, a new model carries the turn on', () => {
+  const at = (s: number) => `2026-01-01T00:00:${String(s).padStart(2, '0')}.000Z`
+  const step = { i: 1, o: 1, cr: 0, cw: 0 }
+  const rows = [
+    { t: 'user', id: null, o: 'human', pv: 'go', ts: at(0), u: null, c: [{ k: 'text', n: 2 }] },
+    { t: 'assistant', id: 'a', ts: at(5), md: 'claude-opus-5-5', u: step, c: [{ k: 'text', n: 4 }] },
+    // A shell ended while main idled: its notice wakes main, with nobody there.
+    { t: 'user', id: null, o: 'task-notification', ts: at(20), u: null, c: [{ k: 'text', n: 40 }] },
+    { t: 'assistant', id: 'b', ts: at(22), md: 'claude-opus-5-5', u: step, c: [{ k: 'use', id: 't1', name: 'Bash', n: 4 }] },
+    // The person typed while it ran: it joins the turn.
+    { t: 'attachment', id: null, ts: at(25), n: 30, at: 'queued_command', qp: { x: 'also the log', n: 12 }, c: [], u: null },
+    { t: 'user', id: null, ts: at(26), u: null, c: [{ k: 'res', id: 't1', n: 4 }] },
+    // Another model mid-turn: a turn of its own, with no prompt.
+    { t: 'assistant', id: 'c', ts: at(30), md: 'claude-sonnet-5-5', u: step, c: [{ k: 'text', n: 4 }] },
+  ] as unknown as Parameters<typeof turnsOf>[0]
+  const turns = turnsOf(rows, {}, {}, {})
+  expect(turns.map(x => [x.startedAt, x.endedAt, x.split ?? false])).toEqual([[at(0), at(22), false], [at(26), at(30), true]])
+  expect(turns[0]?.asked).toEqual([at(25)])
 })
 
 // Requests sent one after another, at no round second: each bar starts where the last one ended, the lane one run with no cell left out.

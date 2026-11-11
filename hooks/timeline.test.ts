@@ -1,9 +1,9 @@
 import { expect, test } from 'claude-code/testing'
 import type { TurnRow } from '../types'
 import { tinyModel } from './views/layout'
-import { sessionFiguresOf, spansOf } from './digest/figures'
+import { awayOf, sessionFiguresOf, spansOf } from './digest/figures'
 import { summaryParts } from './digest/summary'
-import { stackCells, timelineOf, workedOf, type TimelineStart } from './digest/timeline'
+import { stackCells, timelineOf, type TimelineStart } from './digest/timeline'
 
 const T0 = Date.parse('2026-01-01T00:00:00.000Z')
 const at = (s: number) => new Date(T0 + s * 1000).toISOString()
@@ -91,21 +91,40 @@ test("a subagent's requests stack with main's over the stretch it ran, its calls
   expect(line.cols.map(c => c.calls)).toEqual([1, 1, 0, 1, 0, 0, 0, 0, 0, 2])
 })
 
-test('worked is how long something ran, main, a subagent or a shell, overlaps counted once, and the longest run with no idle in it', () => {
-  const s = (x: number) => T0 + x * 1000
-  // main 0–10s, a subagent 5–30s past the turn, a shell 40–50s, main again 60–70s: runs of 30, 10 and 10 seconds.
-  const busy = [{ from: s(0), to: s(10) }, { from: s(5), to: s(30) }, { from: s(40), to: s(50) }, { from: s(60), to: s(70) }]
-  expect(workedOf(busy)).toEqual({ total: 50000, longest: 30000 })
-  // One starting where another ends makes a single run: 60–100s joins the last.
-  expect(workedOf([...busy, { from: s(65), to: s(100) }])).toEqual({ total: 80000, longest: 40000 })
-  expect(workedOf([])).toEqual({ total: 0, longest: 0 })
-  // A run still going is counted to now: once it is the longest, the longest grows with it.
-  const running = (now: number) => workedOf([{ from: s(0), to: s(10) }, { from: s(20), to: s(now) }])
-  expect(running(25)).toEqual({ total: 15000, longest: 10000 })
-  expect(running(60)).toEqual({ total: 50000, longest: 40000 })
+test('away is how long the agent ran with nobody needed: from a prompt to the next time the person came in, its median and its longest', () => {
+  // Two prompts, 0–10s and 60–90s: the idle between is the person's, so two stretches of 10 and 30 seconds.
+  const two = [turn(1, 0, 10, 1, 0), turn(2, 60, 30, 1, 0)]
+  expect(awayOf({ turns: two, now: T0 + 200_000 })).toEqual({ median: 20_000, longest: 30_000, n: 2 })
+  // A new model mid-turn starts a turn of its own with no prompt: it carries the stretch on, the wait between included.
+  expect(awayOf({ turns: [...two, turn(3, 95, 25, 1, 0, { split: true })], now: T0 + 200_000 })).toEqual({ median: 35_000, longest: 60_000, n: 2 })
+  // A message the person sent while it ran means they were there: it cuts the stretch in two.
+  expect(awayOf({ turns: [two[0] as TurnRow, turn(2, 60, 30, 1, 0, { asked: [at(70)] })], now: T0 + 200_000 })).toEqual({ median: 10_000, longest: 20_000, n: 3 })
+  // A turn still going runs to now; with none at all there is nothing to measure.
+  expect(awayOf({ turns: [turn(1, 0, 10, 1, 0), turn(2, 60, 5, 1, 0, { open: true })], now: T0 + 100_000 })).toEqual({ median: 25_000, longest: 40_000, n: 2 })
+  expect(awayOf({ turns: [], now: T0 })).toEqual({ median: 0, longest: 0, n: 0 })
 })
 
-test('the session figures: what the chart holds, what compacting dropped, and the work of turns, subagents and shells counted once', () => {
+test('a turn heard before the record holds it runs from when it was heard; one the record already holds is not counted twice', () => {
+  const done = [turn(1, 0, 10, 1, 0)]
+  expect(awayOf({ turns: done, busySince: T0 + 50_000, now: T0 + 80_000 })).toEqual({ median: 20_000, longest: 30_000, n: 2 })
+  const open = [turn(1, 0, 10, 1, 0, { open: true })]
+  expect(awayOf({ turns: open, busySince: T0 + 1_000, now: T0 + 80_000 })).toEqual({ median: 80_000, longest: 80_000, n: 1 })
+})
+
+test('the session figures: what the chart holds, what compacting dropped, and how long the agent ran with nobody needed', () => {
+  const f = sessionFiguresOf({
+    turns: [turn(1, 0, 10, 1, 0), turn(2, 30, 20, 1, 0)], now: T0 + 60_000,
+    compactions: [{ ts: at(1), trigger: 'auto', pre: 190, post: 30 }, { ts: at(2), trigger: 'manual', pre: 5, post: 9 }],
+    cols: [{ reqs: 1.4, calls: 2.2 }, { reqs: 1.4, calls: 0.2 }],
+  })
+  expect(f.reqs).toBe(3)
+  expect(f.calls).toBe(2)
+  // A compaction that grew the context drops nothing.
+  expect(f.dropped).toBe(160)
+  expect(f.away).toEqual({ median: 15_000, longest: 20_000, n: 2 })
+})
+
+test("a subagent's stretch is what it ran for, from its start to its last event, to now while it runs", () => {
   const spans = spansOf([
     { id: 'a', startedAt: at(5), steps: 3, isLive: false, events: [{ kind: 'tool', ts: at(8) }, { kind: 'text', ts: at(9) }] },
     { id: 'b', startedAt: undefined, steps: 9, isLive: true, events: [] },
@@ -116,34 +135,6 @@ test('the session figures: what the chart holds, what compacting dropped, and th
     { from: at(5), to: at(9), reqs: 3, calls: [at(8)] },
     { from: at(50), to: at(60), reqs: 1, calls: [] },
   ])
-  const shell = { id: 's', owner: 'main', command: 'sleep', startedAt: at(0), endedAt: at(30), status: 'completed' }
-  const f = sessionFiguresOf({
-    turns: [turn(1, 0, 10, 1, 0)], spans, shells: [shell], now: T0 + 60_000,
-    compactions: [{ ts: at(1), trigger: 'auto', pre: 190, post: 30 }, { ts: at(2), trigger: 'manual', pre: 5, post: 9 }],
-    cols: [{ reqs: 1.4, calls: 2.2 }, { reqs: 1.4, calls: 0.2 }],
-  })
-  expect(f.reqs).toBe(3)
-  expect(f.calls).toBe(2)
-  // A compaction that grew the context drops nothing.
-  expect(f.dropped).toBe(160)
-  // 0–30s (turn and shell overlap) + 50–60s.
-  expect(f.worked).toEqual({ total: 40_000, longest: 30_000 })
-})
-
-test('a background shell is work only once its result came back, whatever its command', () => {
-  const workWith = (status: string, endedAt?: string) => sessionFiguresOf({
-    turns: [turn(1, 0, 10, 1, 0)], spans: [], compactions: [], cols: [], now: T0 + 60_000,
-    shells: [{ id: 's', owner: 'main', command: 'sleep', startedAt: at(20), endedAt, status }],
-  }).worked
-  // The turn's 0–10s and the shell's 20–30s, while main did something else or nothing.
-  const returned = { total: 20_000, longest: 10_000 }
-  expect(workWith('completed', at(30))).toEqual(returned)
-  expect(workWith('failed', at(30))).toEqual(returned)
-  // The turn alone: a dev server left running, or one given up on, brought nothing back.
-  const turnAlone = { total: 10_000, longest: 10_000 }
-  expect(workWith('running')).toEqual(turnAlone)
-  expect(workWith('killed', at(30))).toEqual(turnAlone)
-  expect(workWith('ended', at(30))).toEqual(turnAlone)
 })
 
 test('a compaction summary is cut into its numbered sections, the preamble and the closing instructions kept as asides', () => {

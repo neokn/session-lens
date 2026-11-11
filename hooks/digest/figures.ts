@@ -1,5 +1,6 @@
-import type { Compaction, Shell, TurnRow } from '../../types'
-import { workedOf, type Busy, type TimelineSpan } from './timeline'
+import type { Compaction, TurnRow } from '../../types'
+import { at } from './effort'
+import type { TimelineSpan } from './timeline'
 
 type SubAgent = { id: string; startedAt?: string; steps: number; isLive: boolean; events: { kind: string; ts: string }[] }
 
@@ -14,24 +15,38 @@ export function spansOf(agents: SubAgent[], now: number): TimelineSpan[] {
   })
 }
 
-// How a shell ends when its result comes back to the session. One still running, killed, or left when its agent ended
-// brought nothing back, and a server left running looks just like a build until then.
-const RETURNED = ['completed', 'failed']
+/** How long the agent ran with nobody needed, stretch by stretch: one runs from a prompt to the next time the person came
+ * in, a turn a new model started mid-turn carrying it on and a message sent mid-turn cutting it. A turn still going, or
+ * one heard before the record holds it, runs to `now`. What woke the agent without the person (a shell or subagent that
+ * ended, another session's message) is no prompt, so its work is already the turn's. */
+export function awayOf(o: { turns: TurnRow[]; busySince?: number; now: number }): { median: number; longest: number; n: number } {
+  const runs: { from: number; to: number }[] = []
+  for (const t of o.turns) {
+    if (!t.startedAt) continue
+    const from = Date.parse(t.startedAt)
+    const to = t.open ? o.now : from + t.ms
+    const last = runs[runs.length - 1]
+    if (t.split && last) last.to = Math.max(last.to, to)
+    else runs.push({ from, to })
+    for (const q of (t.asked ?? []).map(Date.parse).filter(q => q > from && q < to).sort((a, b) => a - b)) {
+      const cut = runs[runs.length - 1]
+      if (!cut || q <= cut.from) continue
+      cut.to = q
+      runs.push({ from: q, to })
+    }
+  }
+  if (o.busySince !== undefined && !o.turns[o.turns.length - 1]?.open) runs.push({ from: o.busySince, to: o.now })
+  const sorted = runs.map(r => Math.max(0, r.to - r.from)).sort((a, b) => a - b)
+  return { median: at(sorted, 0.5), longest: sorted[sorted.length - 1] ?? 0, n: sorted.length }
+}
 
-/** The session's figures, as numbers: what the Timeline holds in all, what compacting dropped, and how long something
- * ran. Work is the union of main's turns, the subagents' stretches and the stretches of the shells whose result came
- * back, a turn or subagent still running counted to `now`. */
-export function sessionFiguresOf(o: { turns: TurnRow[]; busySince?: number; spans: TimelineSpan[]; shells: Shell[]; compactions: Compaction[]; cols: { reqs: number; calls: number }[]; now: number }): { reqs: number; calls: number; dropped: number; worked: { total: number; longest: number } } {
-  const busy: Busy[] = [
-    ...o.turns.flatMap(t => (t.startedAt ? [{ from: Date.parse(t.startedAt), to: t.open ? o.now : Date.parse(t.startedAt) + t.ms }] : [])),
-    ...(o.busySince !== undefined ? [{ from: o.busySince, to: o.now }] : []),
-    ...o.spans.map(x => ({ from: Date.parse(x.from), to: Date.parse(x.to) })),
-    ...o.shells.flatMap(x => (x.endedAt && RETURNED.includes(x.status) ? [{ from: Date.parse(x.startedAt), to: Date.parse(x.endedAt) }] : [])),
-  ]
+/** The session's figures, as numbers: what the Timeline holds in all, what compacting dropped, and how long the agent ran
+ * with nobody needed. */
+export function sessionFiguresOf(o: { turns: TurnRow[]; busySince?: number; compactions: Compaction[]; cols: { reqs: number; calls: number }[]; now: number }): { reqs: number; calls: number; dropped: number; away: { median: number; longest: number; n: number } } {
   return {
     reqs: Math.round(o.cols.reduce((n, c) => n + c.reqs, 0)),
     calls: Math.round(o.cols.reduce((n, c) => n + c.calls, 0)),
     dropped: o.compactions.reduce((n, x) => n + Math.max(0, x.pre - x.post), 0),
-    worked: workedOf(busy),
+    away: awayOf(o),
   }
 }
