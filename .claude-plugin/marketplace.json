@@ -14,7 +14,7 @@
     {
       "name": "session-lens",
       "source": "./",
-      "description": "A /session-lens pane for Claude Code: what fills the context window, what each turn cost, and every tool, MCP server and skill each agent used, with a live event log.",
+      "description": "A /session-lens pane for Claude Code: what fills the context window, what each turn cost, how long the agent ran with nobody needed, and every tool, MCP server and skill each agent used, with a live event log.",
       "homepage": "https://github.com/neokn/session-lens"
     }
   ]

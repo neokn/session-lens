@@ -173,9 +173,9 @@ test('the live turn keeps its box, its requests newest first, the rest folded on
   expect(await liveLabel()).toContain('next one')
   expect(await liveLabel()).not.toContain('go')
   expect(await tile(/^2$/)).toBeTruthy()
-  // While the turn runs the Work tile counts up with the clock: the total and the longest run, which is this one's own,
+  // While the turn runs the Away tile counts up with the clock: the median and the longest stretch, this one alone,
   // alike (an hour or more shows minutes only, so it takes a minute to move).
-  const work = async () => (await drawn()).match(/"children":\["Work(?: \(MAX\))?"\]\},\{[^\]]*?"children":\["([^"]+)"\]/)?.[1]
+  const work = async () => (await drawn()).match(/"children":\["Away(?: p50 \(MAX\))?"\]\},\{[^\]]*?"children":\["([^"]+)"\]/)?.[1]
   const before = await work()
   await clock.advance(60_000)
   const after = await work()

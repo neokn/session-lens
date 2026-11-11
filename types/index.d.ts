@@ -182,6 +182,10 @@ export type TurnRow = {
   model?: string
   effort?: string
   switched?: boolean
+  /** Started by that new model mid-turn, with no prompt of its own: it carries on the work of the turn before. */
+  split?: boolean
+  /** When the person sent a message while the turn ran, which joins it rather than starting one. */
+  asked?: string[]
   /** The main agent's own calls by kind, and its thinking tokens. */
   calls?: { steps: number; tools: number; skills: number; mcp: number; thinking: number }
   /** The same, one entry for each run of an effort: an effort switched mid-turn splits it, and so does a compaction (`cut` counts those before it). */

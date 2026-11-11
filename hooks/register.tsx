@@ -1100,7 +1100,7 @@ export const register: Register = on => {
       const line = timelineOf({ turns: turnList, spans, compactions: compacted, starts, now, room: CW, settingOf: t => (t.model ? tinyModel(t.model) : undefined) })
       // What the chart holds in all: every request of the session and every tool, skill and MCP call, subagents' too.
       // Only a turn event says when main got busy: with none heard, the record's open turn already runs to now.
-      const { reqs: reqTotal, calls: callTotal, dropped, worked } = sessionFiguresOf({ turns: turnList, busySince: turnLive.isBusy ? turnLive.busySince : undefined, spans, shells, compactions: compacted, cols: line.cols, now })
+      const { reqs: reqTotal, calls: callTotal, dropped, away } = sessionFiguresOf({ turns: turnList, busySince: turnLive.isBusy ? turnLive.busySince : undefined, compactions: compacted, cols: line.cols, now })
       const timelineSummary = [
         `${turnCount} turn${turnCount === 1 ? '' : 's'}`,
         ...(compacted.length > 0 ? [`${compacted.length} compaction${compacted.length > 1 ? 's' : ''}`] : []),
@@ -1109,9 +1109,7 @@ export const register: Register = on => {
       ].join(' · ')
       // How long the session has run, from its first prompt to now: the Timeline's own span, growing while nothing runs.
       const turnsTime = span(Math.max(0, line.to - line.from))
-      // Working is when something runs: a turn of main's, a subagent or `claude -p` child. A background shell joins it only
-      // once its result comes back, so one still running does not turn the spinner. What is left of the Timeline's span is
-      // idle, for the reader to take.
+      // A stretch away grows while main's turn runs, and may yet while a subagent does: its end wakes main.
       const isRunningNow = isBusyNow || liveIds.size > 0
       // Six tiles of the whole session in one row, never wrapped, made once the Timeline has counted its work. The context now is not the session's: it lives in Context.
       // A tile is its name over one figure; `live` puts the working spinner beside the figure, and `reserve` is the room
@@ -1128,8 +1126,9 @@ export const register: Register = on => {
           value: `${compacted.length}${compacted.length > 0 ? ` (-${k(dropped)})` : ''}`,
           reserve: compacted.length > 0 ? width(`${compacted.length} (-)`) + K_W : undefined,
         },
-        // How long something ran, overlaps counted once, and the longest run of it with nothing idle between.
-        { label: 'Work (MAX)', short: 'Work', value: `${span(worked.total)} (${span(worked.longest)})`, live: isRunningNow },
+        // How long the person could leave the agent to it: the median stretch from a prompt to the next time they came
+        // in, and the longest.
+        { label: 'Away p50 (MAX)', short: 'Away', value: `${span(away.median)} (${span(away.longest)})`, live: isRunningNow },
       ]
       // A row too narrow for every name takes the short names; narrower still, it keeps every figure whole and cuts the names.
       const figureNeed = kpiList.map(x => Math.max(width(x.value), x.reserve ?? 0) + (x.live ? 2 : 0) + 2)

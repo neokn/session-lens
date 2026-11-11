@@ -25,7 +25,7 @@ export const samplesIn = (v: unknown): EffortSample[] =>
   Array.isArray(v) ? v.filter((x): x is EffortSample => typeof x?.model === 'string' && typeof x?.effort === 'string' && typeof x?.calls === 'number' && typeof x?.steps === 'number') : []
 
 // The value at a share of the way through a sorted list, between its neighbours.
-const at = (sorted: number[], q: number) => {
+export const at = (sorted: number[], q: number) => {
   if (sorted.length === 0) return 0
   const pos = (sorted.length - 1) * q
   const lo = Math.floor(pos)
