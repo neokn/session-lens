@@ -56,7 +56,9 @@ read_log() {
         | if .open then .open.summaryChars = ($e.message.content // "" | if type == "string" then . elif type == "array" then map(.text? // "") | add // "" else "" end | length) else . end
       elif ($e.type == "assistant" and ($scope != "main" or ($e.isSidechain | not))
             and ($e.message.usage? != null) and ($e.message.id? != null)
-            and ($e.message.model != "<synthetic>")) then
+            and ($e.message.model != "<synthetic>")
+            # A message a compaction kept, written only after it, comes with no context: it is no request, and the one after it is.
+            and ((($e.message.usage.input_tokens // 0) + ($e.message.usage.cache_creation_input_tokens // 0) + ($e.message.usage.cache_read_input_tokens // 0)) > 0)) then
         (if .seen[$e.message.id] then . else                                         # one API request = one message id (streamed entries repeat it)
           .seen[$e.message.id] = true
           | ($e.message.usage) as $u
@@ -286,7 +288,8 @@ jq -sc --argjson current "$CURRENT" --argjson now "$(date +%s)" '
       [KINDS[] as $kind | select(own($model; $kind))
         | settle("init"; $model; $kind; ["ctx"]) as $init | settle("grow"; $model; $kind; ["g"]) as $grow
         | (settle("comp"; $model; $kind; ["again", "againN"]) // {again: 0, againN: 0, none: true}) as $comp
-        | select($init != null and $grow != null)
+        # A mode whose sessions never grew is one no compaction serves: nothing to divide its rounds by.
+        | select($init != null and $grow != null and $grow.g > 0)
         | {kind: $kind, ctx: $init.ctx, g: $grow.g, again: $comp.again, againN: $comp.againN,
            long: growth($model; $kind; true), any: growth($model; $kind; false),
            isShort: ($init.tier != "long" or $grow.tier != "long"), isBorrowed: (($init.borrowed // false) or ($grow.borrowed // false) or ($comp.borrowed // false)), hasNoCompactions: ($comp.none // false)}] as $modes
@@ -307,7 +310,7 @@ jq -sc --argjson current "$CURRENT" --argjson now "$(date +%s)" '
             | ($base + $w * ($x.ratio * $after + $m.again) + $o * $x.out + $m.againN * ($after + $m.again / 2)) as $k
             # Below where the mode starts, every request compacts: a round is one request long.
             | {base: $base, cost: [$grid[] | ([. - BUFFER - $base, $m.g] | max) as $round | $m.weight * $p.read * ($base / $m.g + $round / (2 * $m.g) + 1 + $k / $round)]}] as $parts
-        | {from: (($parts | map(.base) | min) + BUFFER + 1000), cost: [range(0; $grid | length) as $i | $parts | map(.cost[$i]) | add]};
+        | {from: (($parts | map(.base) | min) + BUFFER + 1000 | [., FULL] | min), cost: [range(0; $grid | length) as $i | $parts | map(.cost[$i]) | add]};
       def lowest($c):
         [range(0; $grid | length) | select($grid[.] >= $c.from)] as $idx
         | ($idx | min_by($c.cost[.])) as $b | $c.cost[$b] as $best

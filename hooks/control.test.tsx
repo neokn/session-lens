@@ -258,6 +258,24 @@ test('where a hook is written and what a forked skill is called come in clean fr
   expectClean(await drawn())
 })
 
+// The main page's log is the newest events but the hooks: a hook among the newest waits behind its chip on the log's page.
+test('a hook among the newest events is not on the main page log', async ($, on) => {
+  const HOOK = { t: 'hook', id: null, ts: '2026-01-01T00:00:03.000Z', at: 'hook_additional_context', hn: 'PreToolUse:Bash', cmd: 'run', ms: 5, ec: 0, n: 40, r: 'ok', c: [], u: null }
+  const { ui, press } = await mountLens($, on, {
+    main: [...MAIN, HOOK],
+    files: {
+      '/home/u/.claude/plugins/installed_plugins.json': JSON.stringify({ plugins: { 'guard@mkt': [{ installPath: '/plugins/guard' }] } }),
+      '/plugins/guard/hooks/hooks.json': JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: 'run' }] }] } }),
+    },
+  })
+  expect(await ui.find({ type: 'Text', text: /Event log/ })).toBeTruthy()
+  expect(await ui.find({ type: 'Text', text: /\[plugin:guard\] / })).toBeFalsy()
+  await press('log-all')
+  await $.ui.press({ plugin: 'session-lens', key: 'log-kind-hook', requestId: 'session-lens', surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /\[plugin:guard\] / })).toBeTruthy()
+  await ui.unmount()
+})
+
 test('a child named with an escape, in the file that links it, comes in clean', () => {
   expect(parseChildren(JSON.stringify({ pid: 1, child: `ki${ESC}[31md`, cwd: '/w', at: 1 })).links[0]?.child).toBe('kid')
 })
