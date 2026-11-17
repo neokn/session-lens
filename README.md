@@ -2,6 +2,8 @@
 
 A Claude Code mod that opens a pane with `/session-lens`. It shows where the context window and the session's tokens went, for the main agent and every subagent it launched, while the session runs.
 
+Above the prompt, a band draws the main agent's window as the pane does: how far auto-compact is, and the window to scale. Press it to open the pane.
+
 ![The session-lens pane on a dark terminal: the Session block with its six tiles, Cost bar and Timeline, its marks row showing where subagents (@) and background shells ($) started; the Agents block with the main agent, its live turn and context bar, a running general-purpose subagent drawn under it with its own tiles and a nested Explore, and the running shells under the agents that started them; then the Event log and the footer.](docs/session-lens.png)
 
 The session in this picture is made up, and so are its figures.
@@ -80,16 +82,13 @@ It reads your session logs under `~/.claude/projects/` and changes `~/.claude/se
 ```bash
 claude plugin validate .
 claude plugin test .
-scripts/mutate
 scripts/boundaries
 npx -y -p typescript@5.6.3 tsc -p .
 ```
 
 `tsc` needs the types the engine writes to `.claude-plugin/types/` when it loads the mod, and git ignores that folder. In a fresh clone, start an interactive session once with `claude --plugin-dir .` to lay them. `claude -p` does not write them.
 
-`scripts/mutate` breaks one behaviour at a time (hooks in the log, unpriced names, the forecast's wording, the bar drawn as the Breakdown) and expects the tests to fail on each; a line that says `SURVIVED` or `STALE` means the tests no longer pin that behaviour or the pattern moved.
-
-`scripts/boundaries` checks that each folder of `hooks/` imports only the folders inward of it, that the strata of `views/` import only downward, that no file in `views/` reads or updates an atom, that the version's tabs draw every component, and that every file declaring one atom gives it the same default. `scripts/mutate` runs it before its baseline.
+`scripts/boundaries` checks that each folder of `hooks/` imports only the folders inward of it, that the strata of `views/` import only downward, that no file in `views/` reads or updates an atom, that the version's tabs draw every component, and that every file declaring one atom gives it the same default.
 
 ### Layout
 

@@ -177,6 +177,18 @@ export const setTheme = (next: Theme) => {
 /** Both themes' tokens, for what must hold of each. */
 export const tokensOf = (t: Theme) => PAINTED[t]
 
+// A colour /context names, as the pane draws it. Grey and black are what /context draws the unused room in; anything that
+// takes room is drawn in a colour. The colours it names from the theme each have their place in the palette; one it does
+// not name is still drawn from it. Read as it draws, so a change of theme reaches it.
+const GREYS = new Set(['inactive', 'subtle', 'promptBorder', 'secondaryText', 'gray', 'grey', 'black', 'blackBright', 'whiteBright'])
+const hash = (color: string) => [...color].reduce((n, ch) => n + ch.charCodeAt(0), 0)
+export const vivid = (color: string) => {
+  const SPARE = SERIES.slice(2)
+  const THEME: Record<string, string> = { permission: T.actor.main, claude: T.cost.spend, warning: T.source.mcp, success: T.state.done, error: T.state.danger, suggestion: T.actor.sub, autoAccept: T.actor.main, planMode: T.actor.sub, cyan_FOR_SUBAGENTS_ONLY: T.actor.sub, purple_FOR_SUBAGENTS_ONLY: T.actor.main }
+  const PALETTE = new Set<string>([...Object.values(T).flatMap(g => Object.values(g)), ...SERIES])
+  return PALETTE.has(color) ? color : GREYS.has(color) ? (SPARE[hash(color) % SPARE.length] ?? T.state.live) : (THEME[color] ?? SERIES[hash(color) % SERIES.length] ?? T.state.live)
+}
+
 // Main, a subagent, and one a subagent launched.
 export const agentColor = (depth: number) => (depth === 0 ? T.actor.main : depth === 1 ? T.actor.sub : T.actor.subEcho)
 

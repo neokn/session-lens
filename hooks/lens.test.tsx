@@ -460,3 +460,51 @@ test('a row of tiles keeps the inset before it spends room on the whole sequence
   const roomy = fitTiles(tiles, need(1), 1, true)
   expect([roomy.pad, roomy.tiles[0]?.value]).toEqual([1, 'opus-5-5/medium → sonnet-5-5/medium'])
 })
+
+const BAND = {
+  plugin: 'session-lens',
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 80, scroll: { offset: 0, bodyRows: 20 }, view: {} },
+} as const
+
+// Above the prompt, the window as the pane draws it: the line, then the bar, with the pane shut; a press opens the pane.
+test('the band above the prompt draws the window\'s line and bar once there is a reading', async ($, on) => {
+  mock.clock(on)
+  on('command.register', () => ({ value: { command: 'session-lens' } }))
+  const opens: string[] = []
+  on('ui.open', (_, e) => {
+    opens.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.run', () => ({ text: '' }))
+  on('process.run', () => ({ deny: 'spawn jq ENOENT' }))
+  on('session.usage', () => ({ value: USAGE }))
+  // This hook stands for the engine: what the lens leaves, it draws.
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  // Before any reading the band is left to the rest.
+  const empty = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await empty.find({ type: 'Text' }))?.text).toBe('engine')
+  await empty.unmount()
+
+  await $.command.run({ command: 'session-lens', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await band.find({ type: 'Text', text: /to auto-compact/ }))?.text).toBe('80.0k / 200.0k · 80.0k to auto-compact at 160.0k')
+  // The bar spans the band inside its border, auto-compact's mark on it.
+  expect((await band.find({ type: 'Text', text: /┃/ }))?.text).toMatch(/^█+[│█]*░+┃▒+$/)
+  // A press on the bar opens the pane, as the command does.
+  opens.length = 0
+  await $.ui.press({ plugin: 'session-lens', key: 'band-bar', surface: 'terminal' })
+  expect(opens).toEqual(['session-lens'])
+  await band.unmount()
+
+  // A survey holds the band: the lens yields.
+  const held = await $.ui.mount({ ...BAND, props: { ...BAND.props, hasSurvey: true }, surface: 'terminal' })
+  expect((await held.find({ type: 'Text' }))?.text).toBe('engine')
+  await held.unmount()
+})

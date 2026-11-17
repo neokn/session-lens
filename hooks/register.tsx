@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRun, Chat, ChatKind, Compaction, FailedCall, Opening, Reading, Req, Shape, TokenKinds, TurnRow, UseRow } from '../types'
+import type { AgentRun, Chat, ChatKind, Compaction, FailedCall, Opening, Reading, Req, Shape, Snapshot, TokenKinds, TurnRow, UseRow } from '../types'
 import { agentTreeOf, fed } from './digest/agents'
 import { chatPartsOf, subPartsOf } from './digest/context'
 import { byCost, costModelOf, ledgerOf, spendsOf, sumKinds } from './digest/cost'
@@ -34,7 +34,7 @@ import { TurnBox } from './views/organisms/TurnBox'
 import type { TurnItem } from './views/organisms/TurnEntry'
 import { callsOf, UseTable } from './views/organisms/UseTable'
 import { Lane, Waterfall } from './views/organisms/Waterfall'
-import { agentColor, G, MODEL_SERIES, S, SERIES, SPACE, T, theme } from './views/palette'
+import { agentColor, G, MODEL_SERIES, S, SERIES, SPACE, T, theme, vivid } from './views/palette'
 import { followTheme, switchTheme, themeChanged } from './theme'
 import { runsOf, SPIN, sweepOf } from './views/sweep'
 import { Spacer } from './views/atoms/Spacer'
@@ -100,6 +100,40 @@ const INIT_PAGES = new Map<string, { page: InitKind; isShaped: boolean }>([
 
 // Each effort in two letters, for a tile too narrow to spell it.
 const EFFORT_SHORT: Record<string, string> = { low: 'lo', medium: 'md', high: 'hi', xhigh: 'xh', max: 'mx' }
+
+// The pane opens, in Claude Code's theme, and reads the record again: from the command, or a press on the band.
+async function openLens($: EngineInterface) {
+  await followTheme($)
+  await $.ui.open({ id: PANE, title: 'Session lens' })
+  await opened($)
+}
+
+// Each kind of main's conversation keeps its colour however the sizes reorder them; its name ends in its count.
+const chatColor = (name: string) => {
+  const CHAT_COLOR: [string, string][] = [['Assistant messages', T.actor.main], ['thinking', T.actor.mainEcho], ['User messages', SERIES[5] ?? T.text.soft], ['Tool calls & results', SERIES[2] ?? T.text.soft], ['Notifications (subagents)', T.actor.sub], ['Injected (skills · reminders)', T.source.skill], ['Attachments (reminders · lists · hooks)', T.source.hook], ['Deferred tool definitions', T.source.mcp]]
+  return CHAT_COLOR.find(([kind]) => name.startsWith(kind))?.[1] ?? 'inactive'
+}
+
+// Main's window: the figure in use, what /context names it opened with and the messages since, the largest first, and
+// the messages by kind as the record splits them. The pane and the band above the prompt draw from the same.
+function mainWindowOf(snap: Snapshot, mine: AgentRun | null, compacted: Compaction[], talk: Chat) {
+  const used = snap.rows.filter(r => r.kind === 'used')
+  const messagesRow = used.find(r => /message/i.test(r.name))
+  const categories = used.filter(r => r !== messagesRow)
+  const categorised = categories.reduce((n, r) => n + r.tokens, 0)
+  const ctxNow = mine ? mine.last : snap.total
+  // The first request's own messages leave the window at a compaction: from then on it opens with what /context names.
+  const opened = mine ? (compacted?.length ? categorised : (mine.init ?? 0)) : 0
+  const messagesNow = mine ? Math.max(0, mine.last - opened) : (messagesRow?.tokens ?? 0)
+  const initOther = Math.max(0, opened - categorised)
+  const parts = [
+    ...categories.map(r => ({ key: r.name, name: r.name, v: r.tokens, color: r.color })),
+    ...(initOther > 0 ? [{ key: 'init-other', name: 'Other init (prompt · agents · MCP · memory)', v: initOther, color: 'inactive' }] : []),
+    { key: 'chat', name: 'Messages', v: messagesNow, color: T.actor.main },
+  ].sort((a, b) => b.v - a.v)
+  const chatParts: WindowPart[] = chatPartsOf(talk, messagesNow).map(x => ({ key: x.key, name: x.name, v: x.v, color: chatColor(x.name), approx: x.approx, page: x.kind ? `chat:${x.kind}` : undefined }))
+  return { ctxNow, parts, chatParts }
+}
 
 
 
@@ -171,9 +205,7 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'session-lens' }, async $ => {
-    await followTheme($)
-    await $.ui.open({ id: PANE, title: 'Session lens' })
-    await opened($)
+    await openLens($)
     return { text: 'Session lens opened.' }
   })
 
@@ -332,16 +364,6 @@ export const register: Register = on => {
       const cols = e.props.bodyColumns ?? 80
       const W = cols - 2 // a top block's outer width
       const IW = W - 4 // inside its border and padding
-      // Grey and black are what /context draws the unused room in; anything that takes room is drawn in a colour.
-      const GREYS = new Set(['inactive', 'subtle', 'promptBorder', 'secondaryText', 'gray', 'grey', 'black', 'blackBright', 'whiteBright'])
-      const SPARE = SERIES.slice(2)
-      // The colours /context names from the theme, each given its place in the palette; one it does not name is still drawn from it.
-      const THEME: Record<string, string> = { permission: T.actor.main, claude: T.cost.spend, warning: T.source.mcp, success: T.state.done, error: T.state.danger, suggestion: T.actor.sub, autoAccept: T.actor.main, planMode: T.actor.sub, cyan_FOR_SUBAGENTS_ONLY: T.actor.sub, purple_FOR_SUBAGENTS_ONLY: T.actor.main }
-      const HUES = SERIES
-      const PALETTE = new Set<string>([...Object.values(T).flatMap(g => Object.values(g)), ...SERIES])
-      const hash = (color: string) => [...color].reduce((n, ch) => n + ch.charCodeAt(0), 0)
-      const vivid = (color: string) =>
-        PALETTE.has(color) ? color : GREYS.has(color) ? (SPARE[hash(color) % SPARE.length] ?? T.state.live) : (THEME[color] ?? HUES[hash(color) % HUES.length] ?? T.state.live)
       const spin = SPIN[frame % SPIN.length] ?? ''
       // The window every figure is a share of: the one auto-compact measures against, which `autoCompactWindow` may set below the model's.
       const max = snap.max || 1
@@ -471,21 +493,7 @@ export const register: Register = on => {
       const gWhole = { i: eased('wholeI', whole.i), o: eased('wholeO', whole.o) }
 
       // ── the window ──
-      const rows = snap.rows
-      const used = rows.filter(r => r.kind === 'used')
-      const messagesRow = used.find(r => /message/i.test(r.name))
-      const categories = used.filter(r => r !== messagesRow)
-      const categorised = categories.reduce((n, r) => n + r.tokens, 0)
-      const ctxNow = mine ? mine.last : snap.total
-      // The first request's own messages leave the window at a compaction: from then on it opens with what /context names.
-      const opened = mine ? (compacted?.length ? categorised : (mine.init ?? 0)) : 0
-      const messagesNow = mine ? Math.max(0, mine.last - opened) : (messagesRow?.tokens ?? 0)
-      const initOther = Math.max(0, opened - categorised)
-      const parts = [
-        ...categories.map(r => ({ key: r.name, name: r.name, v: r.tokens, color: r.color })),
-        ...(initOther > 0 ? [{ key: 'init-other', name: 'Other init (prompt · agents · MCP · memory)', v: initOther, color: 'inactive' }] : []),
-        { key: 'chat', name: 'Messages', v: messagesNow, color: T.actor.main },
-      ].sort((a, b) => b.v - a.v)
+      const { ctxNow, parts, chatParts } = mainWindowOf(snap, mine, compacted, talk)
 
       // ── turns ──
       const newest = turnList[turnList.length - 1]
@@ -577,10 +585,6 @@ export const register: Register = on => {
 
       // Context, for every agent: its window drawn to scale, where it compacts, and who takes the most of it.
       // A kind read from the transcript opens a page of what it holds; thinking and what is left are only figures.
-      // Each kind keeps its colour however the sizes reorder them; its name ends in its count.
-      const CHAT_COLOR: [string, string][] = [['Assistant messages', T.actor.main], ['thinking', T.actor.mainEcho], ['User messages', SERIES[5] ?? T.text.soft], ['Tool calls & results', SERIES[2] ?? T.text.soft], ['Notifications (subagents)', T.actor.sub], ['Injected (skills · reminders)', T.source.skill], ['Attachments (reminders · lists · hooks)', T.source.hook], ['Deferred tool definitions', T.source.mcp]]
-      const chatColor = (name: string) => CHAT_COLOR.find(([kind]) => name.startsWith(kind))?.[1] ?? 'inactive'
-      const chatParts: WindowPart[] = chatPartsOf(talk, messagesNow).map(x => ({ key: x.key, name: x.name, v: x.v, color: chatColor(x.name), approx: x.approx, page: x.kind ? `chat:${x.kind}` : undefined }))
       const SUB_COLOR: Record<string, string> = { init: 'inactive', tools: SERIES[2] ?? T.text.soft, skills: T.source.skill, rest: T.actor.sub }
       const subParts = (run: AgentRun, id: string): WindowPart[] => subPartsOf(run, who[id]?.prompt ?? 0, promptOf[id]?.data?.shape).map(x => ({ key: x.key, name: x.name, v: x.v, color: SUB_COLOR[x.key] ?? 'inactive', approx: x.approx }))
       const windowSummary = (now: number, list: WindowPart[]) => {
@@ -1444,5 +1448,34 @@ export const register: Register = on => {
         </Box>
       )
     }
+  })
+
+  // Above the prompt, main's window as the pane draws it: how far auto-compact is, then the window to scale. It reads the
+  // same atoms, so a refresh redraws it with the pane shut; until there is a reading, and while a survey holds the band,
+  // the band is left to the rest. A press on the line or the bar opens the pane.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const [snap, hist, mine, fresh, compacted, stored] = await Promise.all([read($, snapshot), read($, history), read($, mainRun), read($, mainNow), read($, compactions), read($, chat)])
+    if (e.props.hasSurvey || !snap || hist.status === 'pending') return next(e)
+    const ui: UI = $.ui.resolve(e)
+    const { Box, Button } = ui
+    const talk: Chat = { ...noChat(), ...(stored as Partial<Chat>) }
+    const { ctxNow, parts, chatParts } = mainWindowOf(snap, mine, compacted, talk)
+    // What it opened with, then what came in since: the messages by kind once the record is read.
+    const opening = parts.filter(p => p.key !== 'chat' && p.v > 0)
+    const since = hist.status === 'ok' && mine !== null ? chatParts : parts.filter(p => p.key === 'chat')
+    const segs = [...opening, ...since].filter(p => p.v > 0).map(p => ({ v: p.v, color: vivid(p.color) }))
+    const max = snap.max || 1
+    const isNear = snap.threshold !== undefined && snap.threshold - ctxNow < max * 0.1
+    const W = e.props.bodyColumns
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor={isNear ? T.state.danger : T.text.muted} paddingX={SPACE.inset} width={W}>
+        <Button plain key="band-line" onPress={() => openLens($)}>
+          <ContextLine ui={ui} figure={ctxNow} now={ctxNow} max={max} peak={(fresh ?? mine)?.peak} threshold={snap.threshold} isNear={isNear} />
+        </Button>
+        <Button plain key="band-bar" onPress={() => openLens($)}>
+          <ContextBar ui={ui} max={max} threshold={snap.threshold} parts={segs} initParts={opening.length} barWidth={Math.max(20, W - 2 - 2 * SPACE.inset)} />
+        </Button>
+      </Box>
+    )
   })
 }
