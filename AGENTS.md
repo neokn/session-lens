@@ -42,7 +42,6 @@ The checks in the README's [Develop](README.md#develop) section:
 ```bash
 claude plugin validate .
 claude plugin test .
-scripts/mutate
 scripts/boundaries
 npx -y -p typescript@5.6.3 tsc -p .
 ```
